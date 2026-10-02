@@ -27,24 +27,76 @@
       if (old) { l = { ...JSON.parse(old), ...(l || {}) }; if (GM.hasDB() && await GM.setKV("logos", l)) localStorage.removeItem(LOGO_KEY); }
     } catch (e) {}
     logos = l || {};
+    // Logos uploaded before auto-crop existed get cleaned up once.
+    const done = GM.hasDB() ? await GM.getKV("logosCropped") : true;
+    if (!done && Object.keys(logos).length) {
+      for (const k of Object.keys(logos)) { const v = await processLogo(logos[k]); if (v) logos[k] = v; }
+      await saveLogos();
+    }
+    if (GM.hasDB() && !done) await GM.setKV("logosCropped", true);
   }
   async function saveLogos() {
     if (GM.hasDB()) return GM.setKV("logos", { ...logos });
     try { localStorage.setItem(LOGO_KEY, JSON.stringify(logos)); return true; } catch (e) { return false; }
   }
-  function readLogo(file, cb) {
-    const fr = new FileReader();
-    fr.onload = () => {
+  // Clean up an uploaded logo: remove a solid background (e.g. the white box
+  // around a JPG), trim empty margins, and keep the logo's own shape.
+  function processLogo(src) {
+    return new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
-        const N = 128, c = document.createElement("canvas"); c.width = N; c.height = N;
-        const k = Math.min(N / img.width, N / img.height), w = img.width * k, h = img.height * k;
-        c.getContext("2d").drawImage(img, (N - w) / 2, (N - h) / 2, w, h);
-        cb(c.toDataURL("image/png"));
+        try {
+          const MAXIN = 600, k0 = Math.min(1, MAXIN / Math.max(img.width, img.height));
+          const W = Math.max(1, Math.round(img.width * k0)), H = Math.max(1, Math.round(img.height * k0));
+          const c = document.createElement("canvas"); c.width = W; c.height = H;
+          const ctx = c.getContext("2d", { willReadFrequently: true });
+          ctx.drawImage(img, 0, 0, W, H);
+          const id = ctx.getImageData(0, 0, W, H), px = id.data;
+          const at = (x, y) => (y * W + x) * 4;
+          // 1. Solid background: if the four corners share one opaque color, flood-fill
+          //    it from the edges and make it transparent (inner areas of that color stay).
+          const corners = [at(0, 0), at(W - 1, 0), at(0, H - 1), at(W - 1, H - 1)];
+          const c0 = corners[0];
+          const near = (i, j, tol) => Math.abs(px[i] - px[j]) + Math.abs(px[i + 1] - px[j + 1]) + Math.abs(px[i + 2] - px[j + 2]) <= tol;
+          if (corners.every((i) => px[i + 3] > 230 && near(i, c0, 36))) {
+            const seen = new Uint8Array(W * H), stack = [];
+            for (let x = 0; x < W; x++) stack.push(x, (H - 1) * W + x);
+            for (let y = 0; y < H; y++) stack.push(y * W, y * W + W - 1);
+            while (stack.length) {
+              const n = stack.pop();
+              if (seen[n]) continue; seen[n] = 1;
+              const i = n * 4;
+              if (px[i + 3] < 10 || !near(i, c0, 60)) continue;
+              px[i + 3] = 0;
+              const x = n % W, y = (n / W) | 0;
+              if (x > 0) stack.push(n - 1); if (x < W - 1) stack.push(n + 1);
+              if (y > 0) stack.push(n - W); if (y < H - 1) stack.push(n + W);
+            }
+          }
+          // 2. Trim to the visible pixels.
+          let x0 = W, y0 = H, x1 = -1, y1 = -1;
+          for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (px[at(x, y) + 3] > 16) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+          if (x1 < 0) { x0 = 0; y0 = 0; x1 = W - 1; y1 = H - 1; }
+          ctx.putImageData(id, 0, 0);
+          const pad = Math.round(Math.max(x1 - x0, y1 - y0) * 0.03);
+          x0 = Math.max(0, x0 - pad); y0 = Math.max(0, y0 - pad); x1 = Math.min(W - 1, x1 + pad); y1 = Math.min(H - 1, y1 + pad);
+          const cw = x1 - x0 + 1, ch = y1 - y0 + 1;
+          // 3. Store small: longest side 160px, original proportions.
+          const k = Math.min(1, 160 / Math.max(cw, ch));
+          const out = document.createElement("canvas"); out.width = Math.max(1, Math.round(cw * k)); out.height = Math.max(1, Math.round(ch * k));
+          const o = out.getContext("2d"); o.imageSmoothingQuality = "high";
+          o.drawImage(c, x0, y0, cw, ch, 0, 0, out.width, out.height);
+          resolve(out.toDataURL("image/png"));
+        } catch (e) { resolve(src); }
       };
-      img.onerror = () => cb(null);
-      img.src = fr.result;
-    };
+      img.onerror = () => resolve(null);
+      img.src = src;
+    });
+  }
+  function readLogo(file, cb) {
+    const fr = new FileReader();
+    fr.onload = () => processLogo(fr.result).then(cb);
+    fr.onerror = () => cb(null);
     fr.readAsDataURL(file);
   }
 

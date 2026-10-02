@@ -68,7 +68,7 @@
     const y = startYear;
     S = {
       version: 2, startYear: y, season: y, phase: "preseason", day: 0,
-      opts: { realCareers: opts.realCareers !== false, followHistory: opts.followHistory !== false },
+      opts: { realCareers: opts.realCareers !== false, followHistory: opts.followHistory !== false, realSchedule: opts.realSchedule !== false },
       rules: eraRules(y), rulesNext: null,
       conferences: [],
       teams: [], players: {}, nextPid: 9000000, nextFid: 1,
@@ -222,7 +222,34 @@
     }
     return rounds;
   }
+  // The real schedule is used when the league's teams and season length match
+  // that real season exactly; otherwise a balanced schedule is generated.
+  function realScheduleFor(y) {
+    const rs = D.schedules && D.schedules[y];
+    if (!rs || S.opts.realSchedule === false) return null;
+    const fids = new Set(activeTeams().map((t) => t.fid));
+    const cnt = {};
+    for (const g of rs.g) { cnt[g[1]] = (cnt[g[1]] || 0) + 1; cnt[g[2]] = (cnt[g[2]] || 0) + 1; }
+    const rf = Object.keys(cnt);
+    if (rf.length !== fids.size || rf.some((f) => !fids.has(f))) return null;
+    if (Object.values(cnt).some((c) => c !== S.rules.games)) return null;
+    return rs;
+  }
+  function realScheduleStatus(y = S.season) {
+    if (!D.schedules || !D.schedules[y]) return { ok: false, why: `There's no real schedule after ${D.last}.` };
+    if (S.opts.realSchedule === false) return { ok: false, why: "Real schedules are turned off in the League office." };
+    if (realScheduleFor(y)) return { ok: true };
+    return { ok: false, why: `Your ${y} league doesn't match the real ${y} teams and season length, so the schedule is generated.` };
+  }
   function makeSchedule() {
+    const rs = realScheduleFor(S.season);
+    if (rs) {
+      const offs = [...new Set(rs.g.map((g) => g[0]))].sort((a, b) => a - b);
+      const dayOf = Object.fromEntries(offs.map((o, i) => [o, i + 1]));
+      S.schedInfo = { real: true, start: rs.start };
+      return rs.g.map((g, i) => ({ gid: i + 1, day: dayOf[g[0]], off: g[0], home: g[1], away: g[2], real: [g[3], g[4]], played: false }));
+    }
+    S.schedInfo = { real: false };
     const ids = shuffle(activeTeams().map((t) => t.fid));
     const n = ids.length, G = S.rules.games;
     let days = [];
@@ -876,14 +903,73 @@
     }
     for (const p of Object.values(S.players)) { if (p.retired) { p.stats = {}; p.po = {}; } }
   }
-  let saveError = null;
-  function save() {
+  // Saves live in IndexedDB (hundreds of MB available) with localStorage as a
+  // fallback. The in-memory state is authoritative; writes are debounced.
+  const KV = {
+    db: null,
+    open() {
+      return new Promise((res) => {
+        try {
+          if (typeof indexedDB === "undefined") return res(false);
+          const r = indexedDB.open("courtside", 1);
+          r.onupgradeneeded = () => r.result.createObjectStore("kv");
+          r.onsuccess = () => { this.db = r.result; res(true); };
+          r.onerror = r.onblocked = () => res(false);
+        } catch (e) { res(false); }
+      });
+    },
+    get(k) {
+      return new Promise((res) => {
+        if (!this.db) return res(undefined);
+        try { const q = this.db.transaction("kv").objectStore("kv").get(k); q.onsuccess = () => res(q.result); q.onerror = () => res(undefined); } catch (e) { res(undefined); }
+      });
+    },
+    set(k, v) {
+      return new Promise((res) => {
+        if (!this.db) return res(false);
+        try { const tx = this.db.transaction("kv", "readwrite"); tx.objectStore("kv").put(v, k); tx.oncomplete = () => res(true); tx.onerror = tx.onabort = () => res(false); } catch (e) { res(false); }
+      });
+    },
+    del(k) { return new Promise((res) => { if (!this.db) return res(false); try { const tx = this.db.transaction("kv", "readwrite"); tx.objectStore("kv").delete(k); tx.oncomplete = () => res(true); tx.onerror = () => res(false); } catch (e) { res(false); } }); },
+  };
+  let saveError = null, saveTimer = null;
+  function lsSave() {
     try { localStorage.setItem(SAVE_KEY, JSON.stringify(S)); saveError = null; }
-    catch (e) { saveError = "Couldn't save in this browser (storage full or blocked). Use Save & info → Copy save code to keep your league."; }
+    catch (e) { saveError = "Couldn't save in this browser (storage full or blocked). Use Copy save code to keep your league."; }
+  }
+  function save() {
+    if (!S) return;
+    if (!KV.db) return lsSave();
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      KV.set("league", S).then((ok) => { saveError = ok ? null : "Couldn't save in this browser. Use Copy save code to keep your league."; if (!ok) lsSave(); });
+    }, 250);
   }
   function load() { try { const raw = localStorage.getItem(SAVE_KEY); if (!raw) return null; S = JSON.parse(raw); rankCache = null; return S; } catch (e) { return null; } }
+  // Async start-up: open IndexedDB, migrate any old localStorage save, load the league.
+  async function init() {
+    const ok = await KV.open();
+    // Old GM-mode save from earlier versions: no longer used, free its space.
+    try { localStorage.removeItem("wnba-gm-save-v1"); } catch (e) {}
+    if (!ok) return load();
+    let st = await KV.get("league");
+    if (!st) {
+      try { const raw = localStorage.getItem(SAVE_KEY); if (raw) { st = JSON.parse(raw); await KV.set("league", st); } } catch (e) {}
+    }
+    try { localStorage.removeItem(SAVE_KEY); } catch (e) {}
+    if (st) { S = st; rankCache = null; }
+    return S;
+  }
+  // Write any pending save immediately (used when the page is hidden or closed).
+  function flush() { if (!saveTimer || !S) return; clearTimeout(saveTimer); saveTimer = null; if (KV.db) KV.set("league", S); else lsSave(); }
+  if (typeof document !== "undefined" && document.addEventListener) {
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flush(); });
+    window.addEventListener && window.addEventListener("pagehide", flush);
+  }
   function importState(o) { S = o; rankCache = null; save(); }
-  function clearSave() { try { localStorage.removeItem(SAVE_KEY); } catch (e) {} S = null; rankCache = null; }
+  function clearSave() { try { localStorage.removeItem(SAVE_KEY); } catch (e) {} KV.del("league"); S = null; rankCache = null; }
+  const getKV = (k) => KV.get(k), setKV = (k, v) => KV.set(k, v), hasDB = () => !!KV.db;
   function fmtMoney(x) { return Math.abs(x) >= 1e6 ? "$" + (x / 1e6).toFixed(2) + "M" : "$" + Math.round(x / 1000) + "K"; }
 
   // Preview a starting season for the new-league screen.
@@ -922,7 +1008,8 @@
     S.archive = S.archive || {};
     S.archive[S.season] = {
       teams: teamSnapshot(),
-      games: S.schedule.filter((g) => g.played).map((g) => [g.gid, g.day, g.home, g.away, g.hs, g.as, g.ot || 0]),
+      games: S.schedule.filter((g) => g.played).map((g) => [g.gid, g.day, g.home, g.away, g.hs, g.as, g.ot || 0, g.off ?? null, g.real ? g.real[0] : null, g.real ? g.real[1] : null]),
+      info: S.schedInfo || { real: false },
       playoffs: playoffSummary(S.playoffs),
     };
   }
@@ -930,13 +1017,15 @@
   function seasonGames(y) {
     if (y === S.season && S.phase !== "offseason") {
       return { season: y, live: true, teams: teamSnapshot(), boxes: S.boxes,
-        games: S.schedule.map((g) => ({ gid: g.gid, day: g.day, home: g.home, away: g.away, hs: g.hs, as: g.as, ot: g.ot || 0, played: g.played })),
+        info: S.schedInfo || { real: false },
+        games: S.schedule.map((g) => ({ gid: g.gid, day: g.day, off: g.off, real: g.real, home: g.home, away: g.away, hs: g.hs, as: g.as, ot: g.ot || 0, played: g.played })),
         playoffs: playoffSummary(S.playoffs) };
     }
     const a = (S.archive || {})[y]; if (!a) return null;
     const boxes = y === S.season ? S.boxes : S.prevBoxes && S.prevBoxes.season === y ? S.prevBoxes.boxes : {};
     return { season: y, live: false, teams: a.teams, boxes,
-      games: a.games.map(([gid, day, home, away, hs, as, ot]) => ({ gid, day, home, away, hs, as, ot, played: true })), playoffs: a.playoffs };
+      info: a.info || { real: false },
+      games: a.games.map(([gid, day, home, away, hs, as, ot, off, rh, ra]) => ({ gid, day, home, away, hs, as, ot, off: off ?? undefined, real: rh != null ? [rh, ra] : null, played: true })), playoffs: a.playoffs };
   }
   const archivedSeasons = () => {
     const ys = Object.keys(S.archive || {}).map(Number);
@@ -945,7 +1034,7 @@
   };
 
   window.GM = {
-    seasonGames, archivedSeasons,
+    seasonGames, archivedSeasons, init, getKV, setKV, hasDB, realScheduleStatus, flush,
     get S() { return S; }, data: D, F, get saveError() { return saveError; },
     newLeague, load, save, importState, clearSave, previewSeason, eraRules,
     P, T, activeTeams, teamName, roster, freeAgents, payroll, capSpace, econ, age, teamRating, powerRanks, teamMode, rotation,

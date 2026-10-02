@@ -23,8 +23,9 @@ Fan-made. Not affiliated with or endorsed by the WNBA, its teams or its players.
 - **Real draft classes:** players enter the draft in their real draft year, so Sue Bird arrives in 2002, Candace Parker in 2008 and Caitlin Clark in 2024. Generated prospects fill the remaining picks and every class after 2026.
 - **Real career arcs** (on by default): each season, a real player's rating follows how she actually played that year. After 2026, or in seasons she didn't play, normal simulated development takes over.
 - AI front offices handle drafting, re-signing, free agency under your cap, and trades. Contending teams buy veterans and rebuilding teams collect youth.
+- **Real schedules.** When your league matches a real season's teams and length, the real schedule is played on the real dates, with the real scores shown alongside yours. Otherwise a balanced schedule is generated.
 - **Schedule tab** covering every season. Browse by day or by team (with a running record), plus playoff series game by game. Every game's score is kept for the life of the league. Full box scores, with team totals and shooting splits, are kept for the current and previous season.
-- **Your own logos.** Upload an image for the league or any team in Save & info. Logos are stored only in your browser, never in this repo.
+- **Your own logos.** Upload an image for the league or any team in Save & info. Logos are stored only in your browser (IndexedDB), never in this repo.
 - Game-by-game simulation with box scores, injuries, standings, playoffs, awards (MVP, DPOY, ROY, Finals MVP, All-League), transactions and a league record book. The record book compares your alternate history with what really happened.
 
 ## Play
@@ -57,7 +58,7 @@ python scripts/bundle.py
 node tests/sim_test.js 2005 10
 ```
 
-Sources per season: `leaguedash/player_stats_base_*` and `player_stats_advanced_*` (season totals, PIE), `player_bio_*` (height, college, country, draft), `standings_*` (teams, conferences, records, scoring), and `rosters_*` for positions from 2020 on.
+Sources per season: `schedules/wnba_schedule_*` (real schedules and scores), `leaguedash/player_stats_base_*` and `player_stats_advanced_*` (season totals, PIE), `player_bio_*` (height, college, country, draft), `standings_*` (teams, conferences, records, scoring), and `rosters_*` for positions from 2020 on.
 
 ## How ratings work
 

@@ -2,7 +2,7 @@
 // Run: node tests/sim_test.js [startYear] [seasons]
 const fs = require("fs"), path = require("path"), vm = require("vm");
 const store = {};
-const ctx = { console, Math, JSON, localStorage: { getItem: (k) => store[k] ?? null, setItem: (k, v) => (store[k] = v), removeItem: (k) => delete store[k] } };
+const ctx = { console, Math, JSON, setTimeout, clearTimeout, localStorage: { getItem: (k) => store[k] ?? null, setItem: (k, v) => (store[k] = v), removeItem: (k) => delete store[k] } };
 ctx.window = ctx; vm.createContext(ctx);
 for (const f of ["data.js", "names.js", "engine.js"]) vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "js", f), "utf8"), ctx);
 const GM = ctx.GM;

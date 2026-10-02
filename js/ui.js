@@ -19,8 +19,19 @@
   // ---------- logos (stored only in this browser) ----------
   const LOGO_KEY = "courtside-logos-v1";
   let logos = {};
-  try { logos = JSON.parse(localStorage.getItem(LOGO_KEY) || "{}") || {}; } catch (e) { logos = {}; }
-  function saveLogos() { try { localStorage.setItem(LOGO_KEY, JSON.stringify(logos)); return true; } catch (e) { return false; } }
+  // Logos are stored with the league in IndexedDB (localStorage only as a fallback).
+  async function loadLogos() {
+    let l = GM.hasDB() ? await GM.getKV("logos") : null;
+    try {
+      const old = localStorage.getItem(LOGO_KEY);
+      if (old) { l = { ...JSON.parse(old), ...(l || {}) }; if (GM.hasDB() && await GM.setKV("logos", l)) localStorage.removeItem(LOGO_KEY); }
+    } catch (e) {}
+    logos = l || {};
+  }
+  async function saveLogos() {
+    if (GM.hasDB()) return GM.setKV("logos", { ...logos });
+    try { localStorage.setItem(LOGO_KEY, JSON.stringify(logos)); return true; } catch (e) { return false; }
+  }
   function readLogo(file, cb) {
     const fr = new FileReader();
     fr.onload = () => {
@@ -152,11 +163,12 @@
     const S = GM.S, r = S.rules;
     if (S.phase === "preseason") {
       return `<section class="callout"><h3>Preseason ${S.season}</h3>
+        <div class="sub">${GM.realScheduleStatus().ok ? `This season will use the real ${S.season} schedule.` : esc(GM.realScheduleStatus().why)}</div>
         <div class="sub">The commissioner's office is open. Change the playoff format, rules or conferences, add a team, move one or fold one, then start the season.</div>
         <div class="row sub"><span>${GM.activeTeams().length} teams</span>·<span>${r.games} games</span>·<span>${r.playoffTeams} playoff teams seeded ${r.seeding === "conference" ? "by conference" : "league-wide"}</span>·<span>best of ${r.earlyBo} / ${r.semisBo} / ${r.finalsBo}</span>·<span>cap ${money(r.cap)}</span></div>
         <div class="row"><button class="btn primary" data-act="startSeason">Start the season</button><button class="btn" data-act="tab" data-tab="league">League office</button></div></section>`;
     }
-    if (S.phase === "regular") return `<section class="callout"><div class="panel-head"><h3>Regular season · day ${S.day} of ${GM.lastDay()}</h3><span class="sub">${S.rulesNext ? "Rule changes queued for next season" : ""}</span></div>
+    if (S.phase === "regular") return `<section class="callout"><div class="panel-head"><h3>Regular season · day ${S.day} of ${GM.lastDay()}${(() => { const sg = GM.seasonGames(S.season); const g = S.schedule.find((x) => x.day === Math.max(1, S.day)); const d = sg && g ? gameDate(sg, g.off, true) : null; return d ? ` · ${d}` : ""; })()}</h3><span class="sub">${S.rulesNext ? "Rule changes queued for next season" : ""}</span></div>
       <div class="row"><button class="btn" data-act="sim" data-n="1">Sim 1 day</button><button class="btn" data-act="sim" data-n="7">Sim 1 week</button><button class="btn primary" data-act="sim" data-n="999">Sim to playoffs</button></div></section>`;
     if (S.phase === "playoffs") {
       const po = S.playoffs;
@@ -379,6 +391,8 @@
           </section>
           <section class="panel"><h3>Real league history</h3>
             <label class="row" style="flex-wrap:nowrap;align-items:flex-start"><input type="checkbox" id="optHistory" ${S.opts.followHistory ? "checked" : ""}> Bring real franchise moves (expansions, relocations, folds, schedule changes) to me for approval</label>
+            <label class="row" style="flex-wrap:nowrap;align-items:flex-start"><input type="checkbox" id="optSched" ${S.opts.realSchedule !== false ? "checked" : ""}> Use the real schedule when the league matches that season's real teams and season length</label>
+            <div class="sub">${esc(GM.realScheduleStatus().ok ? `${S.season}: the real schedule fits your league.` : GM.realScheduleStatus().why)}</div>
             <label class="row" style="flex-wrap:nowrap;align-items:flex-start"><input type="checkbox" id="optCareers" ${S.opts.realCareers ? "checked" : ""}> Real players follow their real career arcs</label>
             ${GM.pendingEvents().length ? GM.pendingEvents().map(eventRow).join("") : `<div class="sub">Nothing pending right now. Real moves for next season appear here during the offseason.</div>`}
           </section>
@@ -395,17 +409,25 @@
     return `<section class="panel"><div class="panel-head"><h3>Day ${day} results</h3><button class="btn small" data-act="tab" data-tab="schedule">Full schedule</button></div>
       <div class="tablewrap"><table><tbody>${played.filter((g) => g.day === day).map((g) => gameRow(sg, g)).join("")}</tbody></table></div></section>`;
   }
+  // Calendar date of a game on a real schedule ("Sat, May 21"); null when generated.
+  function gameDate(sg, off, withYear) {
+    if (!sg.info || !sg.info.real || off == null) return null;
+    const d = new Date(sg.info.start + "T12:00:00"); d.setDate(d.getDate() + off);
+    return d.toLocaleDateString(undefined, withYear ? { weekday: "short", month: "short", day: "numeric", year: "numeric" } : { weekday: "short", month: "short", day: "numeric" });
+  }
   function gameRow(sg, g, perspective) {
     const snap = sg.teams, hasBox = !!sg.boxes[g.gid];
+    const when = gameDate(sg, g.off) || (g.day !== "" ? `Day ${g.day}` : "");
     const aw = g.as > g.hs, hw = g.hs > g.as;
     const box = hasBox ? `<button class="btn small" data-act="box" data-season="${sg.season}" data-gid="${g.gid}">Box</button>` : "";
     if (perspective) {
       const home = g.home === perspective, opp = home ? g.away : g.home;
-      if (!g.played) return `<tr><td class="muted">Day ${g.day}</td><td>${home ? "vs" : "@"} ${snapBadge(snap, opp)} ${esc(snapName(snap, opp))}</td><td></td><td></td><td></td></tr>`;
+      const realTxt = g.real ? (() => { const ru = home ? g.real[0] : g.real[1], rth = home ? g.real[1] : g.real[0]; return `${ru > rth ? "W" : "L"} ${ru}-${rth}`; })() : "";
+      if (!g.played) return `<tr><td class="muted">${when}</td><td>${home ? "vs" : "@"} ${snapBadge(snap, opp)} ${esc(snapName(snap, opp))}</td><td></td><td></td><td class="num muted">${realTxt}</td><td></td></tr>`;
       const us = home ? g.hs : g.as, them = home ? g.as : g.hs;
-      return `<tr><td class="muted">Day ${g.day}</td><td>${home ? "vs" : "@"} ${snapBadge(snap, opp)} ${esc(snapName(snap, opp))}</td><td class="num"><span class="${us > them ? "w" : "l"}">${us > them ? "W" : "L"}</span> ${us}-${them}${g.ot ? " OT" : ""}</td><td class="num muted">${g.rec || ""}</td><td class="num">${box}</td></tr>`;
+      return `<tr><td class="muted">${when}</td><td>${home ? "vs" : "@"} ${snapBadge(snap, opp)} ${esc(snapName(snap, opp))}</td><td class="num"><span class="${us > them ? "w" : "l"}">${us > them ? "W" : "L"}</span> ${us}-${them}${g.ot ? " OT" : ""}</td><td class="num muted">${g.rec || ""}</td><td class="num muted">${realTxt}</td><td class="num">${box}</td></tr>`;
     }
-    return `<tr><td>${snapBadge(snap, g.away)} <span class="${aw ? "rt" : "muted"}">${esc(snap[g.away]?.name || g.away)}</span></td><td class="num ${aw ? "rt" : "muted"}">${g.played ? g.as : ""}</td><td class="muted">@</td><td>${snapBadge(snap, g.home)} <span class="${hw ? "rt" : "muted"}">${esc(snap[g.home]?.name || g.home)}</span></td><td class="num ${hw ? "rt" : "muted"}">${g.played ? g.hs : ""}</td><td class="muted">${g.ot ? (g.ot > 1 ? g.ot : "") + "OT" : ""}</td><td class="num">${box}</td></tr>`;
+    return `<tr><td>${snapBadge(snap, g.away)} <span class="${aw ? "rt" : "muted"}">${esc(snap[g.away]?.name || g.away)}</span></td><td class="num ${aw ? "rt" : "muted"}">${g.played ? g.as : ""}</td><td class="muted">@</td><td>${snapBadge(snap, g.home)} <span class="${hw ? "rt" : "muted"}">${esc(snap[g.home]?.name || g.home)}</span></td><td class="num ${hw ? "rt" : "muted"}">${g.played ? g.hs : ""}</td><td class="muted">${g.ot ? (g.ot > 1 ? g.ot : "") + "OT" : ""}</td><td class="num muted" title="Real score that night">${g.real ? `real ${g.real[1]}-${g.real[0]}` : ""}</td><td class="num">${box}</td></tr>`;
   }
   function renderSchedule() {
     const S = GM.S, years = GM.archivedSeasons();
@@ -432,15 +454,16 @@
         if (g.played) { const won = (g.home === tf) === (g.hs > g.as); won ? w++ : l++; g = { ...g, rec: `${w}-${l}` }; }
         return gameRow(sg, g, tf);
       });
-      body = `<div class="tablewrap"><table><thead><tr><th>Day</th><th>Opponent</th><th class="num">Result</th><th class="num">Record</th><th></th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
+      body = `<div class="tablewrap"><table><thead><tr><th>${sg.info.real ? "Date" : "Day"}</th><th>Opponent</th><th class="num">Result</th><th class="num">Record</th><th class="num">${sg.info.real ? "Real life" : ""}</th><th></th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
     } else {
       const days = [...new Set(sg.games.map((g) => g.day))].sort((a, b) => a - b);
       body = days.map((d) => { const gs = sg.games.filter((g) => g.day === d); const done = gs.every((g) => g.played);
-        return `<details open><summary class="eyebrow" style="cursor:pointer">Day ${d} · ${gs.length} game${gs.length === 1 ? "" : "s"}${done ? "" : " · upcoming"}</summary><div class="tablewrap"><table><tbody>${gs.map((g) => gameRow(sg, g)).join("")}</tbody></table></div></details>`; }).join("");
+        const dt = gameDate(sg, gs[0].off);
+        return `<details open><summary class="eyebrow" style="cursor:pointer">${dt ? `${dt} · day ${d}` : `Day ${d}`} · ${gs.length} game${gs.length === 1 ? "" : "s"}${done ? "" : " · upcoming"}</summary><div class="tablewrap"><table><tbody>${gs.map((g) => gameRow(sg, g)).join("")}</tbody></table></div></details>`; }).join("");
     }
     const played = sg.games.filter((g) => g.played).length;
     $("#view").innerHTML = `<section class="panel">
-      <div class="panel-head"><div><h2>${ui.sched.season} schedule</h2><div class="sub">${sg.games.length} regular-season games · ${played} played · ${boxNote}</div></div>
+      <div class="panel-head"><div><h2>${ui.sched.season} schedule</h2><div class="sub">${sg.info.real ? `The real ${ui.sched.season} schedule, opening ${gameDate(sg, 0, true)}. Real scores are shown for comparison.` : "Generated schedule."} ${sg.games.length} regular-season games · ${played} played · ${boxNote}</div></div>
         <div class="row"><select id="schedSeason" aria-label="Season">${years.map((y) => `<option ${y === ui.sched.season ? "selected" : ""}>${y}</option>`).join("")}</select>
         <select id="schedTeam" aria-label="Team"><option value="all">All teams</option>${fids.map((f) => `<option value="${f}" ${f === tf ? "selected" : ""}>${esc(snapName(snap, f))}</option>`).join("")}</select></div></div>
       <div class="row"><button class="btn small ${view === "regular" ? "primary" : ""}" data-act="schedView" data-v="regular">Regular season</button><button class="btn small ${view === "playoffs" ? "primary" : ""}" data-act="schedView" data-v="playoffs">Playoffs</button></div>
@@ -463,8 +486,8 @@
       </tbody></table></div><div class="sub">The first five listed started.</div></div>`;
     };
     return `<div class="modal-bg" data-act="closeModal"><div class="modal" style="width:min(960px,100%)" role="dialog" aria-modal="true" aria-label="Box score" data-stop>
-      <div class="modal-head"><div><span class="eyebrow">${season} ${po ? "playoffs" : `regular season${g ? ` · day ${g.day}` : ""}`}</span>
-        <h2>${esc(snap[b.away]?.name || b.away)} ${b.as} · ${esc(snap[b.home]?.name || b.home)} ${b.hs}${b.ot ? ` (${b.ot > 1 ? b.ot : ""}OT)` : ""}</h2><div class="sub">at ${esc(snapName(snap, b.home))}</div></div><button class="btn" data-act="closeModal">Close</button></div>
+      <div class="modal-head"><div><span class="eyebrow">${season} ${po ? "playoffs" : `regular season${g ? ` · ${gameDate(sg, g.off, true) || "day " + g.day}` : ""}`}</span>
+        <h2>${esc(snap[b.away]?.name || b.away)} ${b.as} · ${esc(snap[b.home]?.name || b.home)} ${b.hs}${b.ot ? ` (${b.ot > 1 ? b.ot : ""}OT)` : ""}</h2><div class="sub">at ${esc(snapName(snap, b.home))}${g && g.real ? ` · in real life that night: ${esc(snap[b.away]?.abbr || b.away)} ${g.real[1]}, ${esc(snap[b.home]?.abbr || b.home)} ${g.real[0]}` : ""}</div></div><button class="btn" data-act="closeModal">Close</button></div>
       ${tbl(b.away)}${tbl(b.home)}</div></div>`;
   }
   function logoPanel() {
@@ -564,6 +587,7 @@
     else if (el.id === "optReal") ui.setup.realCareers = el.checked;
     else if (el.id === "optHist") ui.setup.followHistory = el.checked;
     else if (el.id === "optHistory") { GM.S.opts.followHistory = el.checked; GM.save(); render(); }
+    else if (el.id === "optSched") { GM.S.opts.realSchedule = el.checked; GM.save(); render(); }
     else if (el.id === "optCareers") { GM.S.opts.realCareers = el.checked; GM.save(); }
     else if (el.id === "newsKind") { ui.newsKind = el.value; render(); }
     else if (el.id === "pteam") { ui.players.team = el.value; render(); }
@@ -575,8 +599,10 @@
       readLogo(el.files[0], (url) => {
         if (!url) { toast("That file couldn't be read as an image.", true); return; }
         logos[key] = url;
-        if (!saveLogos()) { delete logos[key]; toast("Browser storage is full; the logo wasn't saved.", true); return; }
-        toast("Logo saved in this browser."); render();
+        saveLogos().then((ok) => {
+          if (!ok) { delete logos[key]; toast("This browser wouldn't save the logo. Try a smaller image, or check that site storage is allowed.", true); render(); return; }
+          toast("Logo saved in this browser."); render();
+        });
       });
     }
     else if (el.id === "importFile" && el.files[0]) { const r = new FileReader(); r.onload = () => { try { const o = JSON.parse(r.result); if (!o.rules) throw 0; if (o._logos) { logos = o._logos; saveLogos(); } delete o._logos; GM.importState(o); ui.tab = "office"; toast("League loaded."); render(); } catch (err) { toast("That file isn't a Courtside save.", true); } }; r.readAsText(el.files[0]); }
@@ -587,6 +613,6 @@
   });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && ui.modal) { ui.modal = null; render(); } });
 
-  GM.load();
-  render();
+  $("#view").innerHTML = `<div class="empty">Loading your league…</div>`;
+  GM.init().then(loadLogos).then(render, () => render());
 })();

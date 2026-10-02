@@ -1,75 +1,78 @@
-# Courtside GM
+# Courtside Commissioner
 
-A WNBA general manager simulator that runs in the browser. Every roster, rating and stat line starts from the real **2026 season**, built from [sportsdataverse/wehoop-wnba-stats-data](https://github.com/sportsdataverse/wehoop-wnba-stats-data).
+An alternate-history WNBA simulator that runs in the browser. Pick any season from **1997 to 2026** and start the league from that year's real teams, rosters and players. From there you're the commissioner: you set the rules and the league's structure, and the sim runs every team.
 
-Pick one of the 15 franchises and run it:
-
-- **Roster and rotation.** Set your starters and minutes order. Release players, with dead money counted against the cap.
-- **Trades.** Trade players and draft picks (three rounds, two years out) with AI front offices. Contending teams value current production, while rebuilding teams value youth, potential and picks. *What would make this work?* asks the other team what it would take.
-- **Free agency.** Make offers under a hard cap. Players weigh salary, contract length and how good your team is.
-- **Seasons.** A 44-game schedule with box scores, injuries, standings and league leaders, followed by playoffs: best-of-3, best-of-5, then a best-of-7 Finals.
-- **Offseason.** Awards (MVP, DPOY, ROY, Finals MVP), a draft lottery, a 3-round draft with scouting estimates, re-signings, player development and aging, retirements, and cap growth.
-- **Save.** Saves automatically in your browser. You can export or import a save code to move a league between devices.
+Data comes from [sportsdataverse/wehoop-wnba-stats-data](https://github.com/sportsdataverse/wehoop-wnba-stats-data).
 
 Fan-made. Not affiliated with or endorsed by the WNBA, its teams or its players.
 
+## What you control
+
+- **Playoff format.** Number of teams, seeding (league-wide or by conference), and series length for the early rounds, semifinals and Finals. Top seeds get byes when the field doesn't fill a bracket.
+- **Conferences.** Create, rename and dissolve conferences, and move teams between them.
+- **Franchises.**
+  - *Expansion:* the new team gets an expansion draft with protected lists, and picks first in its first draft.
+  - *Relocation and rebrands.*
+  - *Contraction:* folding a team sends its players to a dispersal draft.
+- **League rules.** Season length, salary cap and growth, max salary, roster limits, draft rounds, draft lottery, expansion protection and the trade deadline.
+- **Real history.** Real expansions, relocations, folds and schedule changes come up on their real dates, and you approve or veto each one. Examples: the Detroit Shock joining in 1998, the Utah Starzz moving to San Antonio in 2003, the Houston Comets folding after 2008.
+
+## What the sim runs
+
+- 30 seasons of real rosters, ratings and stats, including the original 1997 teams.
+- **Real draft classes:** players enter the draft in their real draft year, so Sue Bird arrives in 2002, Candace Parker in 2008 and Caitlin Clark in 2024. Generated prospects fill the remaining picks and every class after 2026.
+- **Real career arcs** (on by default): each season, a real player's rating follows how she actually played that year. After 2026, or in seasons she didn't play, normal simulated development takes over.
+- AI front offices handle drafting, re-signing, free agency under your cap, and trades. Contending teams buy veterans and rebuilding teams collect youth.
+- Game-by-game simulation with box scores, injuries, standings, playoffs, awards (MVP, DPOY, ROY, Finals MVP, All-League), transactions and a league record book. The record book compares your alternate history with what really happened.
+
 ## Play
 
-Open `index.html` in a browser. There's no build step and no server needed.
+Open `index.html` in a browser; no build step or server is needed. On GitHub Pages, go to Settings → Pages → *Deploy from a branch* → `main`, `/ (root)`.
 
-To host it on **GitHub Pages**, go to Settings → Pages, choose *Deploy from a branch*, then pick `main` and `/ (root)`.
-
-`dist/courtside-gm.html` is the same app as a single self-contained file.
+`dist/courtside.html` is the same app as one self-contained file.
 
 ## Project layout
 
 ```
-index.html              app shell
-css/style.css           styles (light + dark)
-js/data.js              generated league baseline (do not edit by hand)
-js/names.js             name pools for generated prospects
-js/engine.js            simulation: games, AI, trades, free agency, draft, offseason
-js/ui.js                views and interactions
-scripts/build_league.py builds js/data.js from wehoop parquet files
-scripts/bundle.py       builds dist/courtside-gm.html
-tests/sim_test.js       headless multi-season smoke test
+index.html                 app shell
+css/style.css              styles (light + dark)
+js/data.js                 generated 1997-2026 league history (do not edit by hand)
+js/names.js                name pools for generated players
+js/engine.js               simulation, AI front offices, commissioner powers
+js/ui.js                   views and interactions
+scripts/build_history.py   builds js/data.js from wehoop parquet files
+scripts/bundle.py          builds dist/courtside.html
+tests/sim_test.js          headless multi-season test: node tests/sim_test.js 1997 30
 ```
 
 ## Rebuilding the data
 
 ```sh
 pip install pandas pyarrow numpy
-python scripts/build_league.py                    # downloads 2026 files from GitHub
-python scripts/build_league.py --data-dir ../wehoop-wnba-stats-data   # or use a local clone
-python scripts/bundle.py                          # refresh the single-file build
-node tests/sim_test.js 3                          # simulate 3 seasons as a check
+python scripts/build_history.py                    # downloads from GitHub
+python scripts/build_history.py --data-dir ../wehoop-wnba-stats-data
+python scripts/bundle.py
+node tests/sim_test.js 2005 10
 ```
 
-The builder reads these files:
-
-| File | Used for |
-|---|---|
-| `rosters/rosters_2026` | teams, positions, height, age, experience, how acquired |
-| `player_season_stats/…_2026` (base + advanced, per game) | box-score production, TS%, usage |
-| `leaguedash/player_stats_base_*`, `player_stats_advanced_*` (1997–2026) | full career season totals, PIE; player-card career tables |
-| `player_impact/wnba_player_impact_2026` | BPM, adjusted RAPM, WAR |
-| `standings/standings_2026` | team records and point differential (to calibrate the game sim) |
-| `draft/draft_2026` | reference for the real 2026 draft |
+Sources per season: `leaguedash/player_stats_base_*` and `player_stats_advanced_*` (season totals, PIE), `player_bio_*` (height, college, country, draft), `standings_*` (teams, conferences, records, scoring), and `rosters_*` for positions from 2020 on.
 
 ## How ratings work
 
-- **OVR uses each player's full WNBA career**, from 1997 through 2026. Each season is first scored against that year's league, which keeps eras with different pace comparable. Those season scores are averaged by minutes played, with each earlier year counting 80% as much as the one after it, so a 2019 MVP season still counts but recent form counts most. The career inputs are Game Score per 36 (45%), PIE (15%) and minutes per game (15%). The 2026 Box Plus/Minus (15%) and adjusted RAPM (10%) are added as a current-form check. Players with few career minutes are shrunk toward replacement level, and the scale puts the league average near 58. Change the weighting with `--career-decay`: `1.0` counts every season equally, `0.5` leans hard on recent seasons.
-- **Skill ratings** come from recency-weighted career per-36 rates and career shooting percentages: inside scoring, 3-point, free throw, playmaking, rebounding, defense and athleticism.
-- **Potential** adds growth room for players younger than 27.
-- **Game sim.** Team strength is the minutes-weighted OVR of the rotation. Strength gaps convert to point margin with a slope fitted to real 2026 point differentials (r ≈ 0.87), plus home court and randomness. Player box scores are then distributed by skill ratings.
+A player's rating for any season uses her whole career up to that point:
 
-## Contracts are estimates
+1. Each season is graded against that year's league (z-scores of Game Score per 36, PIE and minutes per game), so eras compare fairly.
+2. Seasons are averaged by minutes played, with each year back counting 80% as much as the year after it (`--decay` changes this).
+3. Players with few minutes are pulled toward replacement level, and the scale centers the league near 58.
 
-The source data has no salaries, so contracts are modelled from player value on a scale shaped like the 2026 CBA (about $7M cap, $1.4M supermax, $270K minimum). The first simulated season (2027) uses a $7.5M hard cap, $1.5M max and $285K minimum, growing about 7% a year. Contract lengths are assigned deterministically per player, and 2024–2026 draftees are on rookie-scale deals.
+Skill ratings (inside scoring, 3-point, free throws, playmaking, rebounding, defense, athleticism) come from recency-weighted career per-36 rates and shooting percentages.
+
+Game results come from each team's minutes-weighted rating. The gap between two teams converts to a point margin using a slope fitted across all 30 real seasons, and scoring follows each real season's league average.
+
+## Money
+
+The source data has no salaries. Caps before 2026 are rough estimates, and the 2026 cap is $7M (new CBA). Salaries scale with whatever cap you set.
 
 ## Credits
 
-- Data: [wehoop-wnba-stats-data](https://github.com/sportsdataverse/wehoop-wnba-stats-data) by SportsDataverse, CC BY 4.0.
-- Draft prospects and some filler free agents are generated with invented names.
-
-Code is MIT licensed (see `LICENSE`).
+Data: [wehoop-wnba-stats-data](https://github.com/sportsdataverse/wehoop-wnba-stats-data) by SportsDataverse, CC BY 4.0. Code: MIT (see `LICENSE`).

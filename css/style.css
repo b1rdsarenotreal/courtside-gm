@@ -194,3 +194,10 @@ textarea { width: 100%; min-height: 90px; font-family: var(--font-mono); font-si
 .prose { max-width: 70ch; display: grid; gap: 8px; }
 .prose p { margin: 0; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* commissioner forms */
+.formgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px 14px; }
+.field { display: grid; gap: 4px; min-width: 0; }
+.field input, .field select { width: 100%; }
+input[type="color"] { width: 44px; height: 32px; padding: 2px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+details summary { padding: 4px 0; }

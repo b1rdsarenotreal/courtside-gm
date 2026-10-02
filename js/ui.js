@@ -1,74 +1,51 @@
-// WNBA GM simulator UI: renders views from GM.S and wires up actions.
+// Courtside commissioner UI: renders views from GM.S and wires up actions.
 (function () {
   "use strict";
-  const $ = (sel) => document.querySelector(sel);
+  const $ = (s) => document.querySelector(s);
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const money = (x) => GM.fmtMoney(x);
   const pct = (x) => (x ? (x * 100).toFixed(1) : "–");
   const f1 = (x) => (x == null ? "–" : (+x).toFixed(1));
   const ht = (i) => (i ? `${Math.floor(i / 12)}'${i % 12}"` : "–");
+  const D = GM.data, F = GM.F;
 
   const ui = {
-    tab: "dashboard",
-    sort: {},
-    trade: { partner: null, give: new Set(), get: new Set(), givePicks: new Set(), getPicks: new Set(), msg: null },
-    offer: null,
-    modal: null,
-    newsMine: false,
-    leaders: "pts",
-    players: { q: "", team: "all", sort: "ovr" },
-    confirm: null,
+    tab: "office", modal: null, confirm: null, sort: {},
+    newsKind: "all", leaders: "pts", players: { q: "", team: "all" }, txTeam: "all",
+    setup: { year: 2026, realCareers: true, followHistory: true },
   };
 
   // ---------- shared bits ----------
   const tier = (o) => (o >= 80 ? "t1" : o >= 70 ? "t2" : o >= 60 ? "t3" : "t4");
   const ovr = (o) => `<span class="ovr ${tier(o)}">${o}</span>`;
   const rt = (v) => `<span class="rt ${v >= 75 ? "hi" : v >= 55 ? "mid" : "lo"}">${v}</span>`;
-  const badge = (tid, big) => { const t = GM.T(tid); return t ? `<span class="badge${big ? " big" : ""}" style="background:${t.color}">${tid}</span>` : `<span class="badge" style="background:var(--tier-4)">FA</span>`; };
+  const badge = (fid, big) => { const t = GM.S && GM.T(fid); return t ? `<span class="badge${big ? " big" : ""}" style="background:${t.color}">${esc(t.abbr)}</span>` : `<span class="badge" style="background:var(--tier-4)">FA</span>`; };
+  const badgeRaw = (abbr, color, big) => `<span class="badge${big ? " big" : ""}" style="background:${color}">${esc(abbr)}</span>`;
   const plink = (p) => `<button class="plink" data-act="player" data-id="${p.id}">${esc(p.name)}</button><span class="pos">${esc(p.pos)}</span>`;
+  const tlink = (fid) => { const t = GM.T(fid); return t ? `<button class="plink" data-act="team" data-id="${fid}">${esc(t.city)} ${esc(t.name)}</button>` : "–"; };
   const rec = (t) => `${t.w}-${t.l}`;
-  const phaseLabel = { preseason: "Preseason", regular: "Regular season", playoffs: "Playoffs", draft: "Draft", resign: "Re-signings", freeagency: "Free agency" };
-
-  function toast(msg, bad) {
-    const el = document.createElement("div");
-    el.className = "toast" + (bad ? " bad" : "");
-    el.textContent = msg;
-    document.body.appendChild(el);
-    setTimeout(() => el.remove(), 4200);
-  }
-
-  function sortRows(rows, key, defs) {
-    const s = ui.sort[key] || defs;
-    const get = s.get;
-    rows.sort((a, b) => { const x = get(a), y = get(b); return (x < y ? -1 : x > y ? 1 : 0) * (s.dir || -1); });
-    return rows;
-  }
-  function th(label, key, col, numeric = true) {
-    const s = ui.sort[key];
-    const on = s && s.col === col;
-    return `<th class="sortable${numeric ? " num" : ""}${on ? " sorted" : ""}" data-act="sort" data-key="${key}" data-col="${col}">${label}${on ? (s.dir > 0 ? " ▲" : " ▼") : ""}</th>`;
-  }
+  const phaseLabel = { preseason: "Preseason", regular: "Regular season", playoffs: "Playoffs", offseason: "Offseason" };
+  function toast(msg, bad) { const el = document.createElement("div"); el.className = "toast" + (bad ? " bad" : ""); el.textContent = msg; document.body.appendChild(el); setTimeout(() => el.remove(), 4200); }
+  function sortRows(rows, key, def) { const s = ui.sort[key] || def; rows.sort((a, b) => { const x = s.get(a), y = s.get(b); return (x < y ? -1 : x > y ? 1 : 0) * (s.dir || -1); }); return rows; }
+  function th(label, key, col) { const s = ui.sort[key], on = s && s.col === col; return `<th class="sortable num${on ? " sorted" : ""}" data-act="sort" data-key="${key}" data-col="${col}">${label}${on ? (s.dir > 0 ? " ▲" : " ▼") : ""}</th>`; }
+  const getters = { age: (p) => GM.age(p), ovr: (p) => p.r.ovr, pot: (p) => p.r.pot, ins: (p) => p.r.ins, thr: (p) => p.r.thr, ply: (p) => p.r.ply, reb: (p) => p.r.reb, def: (p) => p.r.def, sal: (p) => p.c.sal };
+  const bestReal = (y) => { const r = D.teams[y]; return r ? r.slice().sort((a, b) => b.w / (b.w + b.l) - a.w / (a.w + a.l))[0] : null; };
 
   // ---------- top bar ----------
   function renderTop() {
     const S = GM.S;
-    if (!S) { $("#top").innerHTML = `<div class="topbar-inner"><span class="brand">Courtside GM</span></div>`; return; }
-    const ut = GM.T(S.userTeam);
-    const ranks = GM.powerRanks();
-    const space = GM.capSpace(S.userTeam);
-    const tabs = [
-      ["dashboard", "Front office"], ["roster", "Roster"], ["trade", "Trade"], ["fa", "Free agents"], ["draft", "Draft"],
-      ["standings", "Standings"], ["schedule", "Schedule"], ["leaders", "Leaders"], ["players", "Players"], ["history", "History"], ["settings", "Save & info"],
-    ];
-    const dot = (k) => (k === "draft" && S.phase === "draft") || (k === "fa" && S.phase === "freeagency") || (k === "roster" && S.phase === "resign") ? `<span class="dot"></span>` : "";
+    if (!S) { $("#top").innerHTML = `<div class="topbar-inner"><span class="brand">Courtside · Commissioner</span></div>`; return; }
+    const champ = S.history[0];
+    const tabs = [["office", "Office"], ["standings", "Standings"], ["playoffs", "Playoffs"], ["teams", "Teams"], ["players", "Players"], ["leaders", "Leaders"], ["draft", "Draft"], ["moves", "Transactions"], ["history", "History"], ["league", "League office"], ["settings", "Save & info"]];
+    const dot = (k) => (k === "league" && GM.officeOpen()) || (k === "playoffs" && S.phase === "playoffs") ? `<span class="dot"></span>` : "";
     $("#top").innerHTML = `
       <div class="topbar-inner">
-        <div class="teamline">${badge(ut.id, true)}<div><div class="brand">${S.season} · ${phaseLabel[S.phase]}${S.phase === "regular" ? ` · day ${S.day}/${GM.lastDay()}` : ""}</div><div class="tname">${esc(ut.city)} ${esc(ut.name)}</div></div></div>
+        <div class="teamline"><div><div class="brand">Courtside · Commissioner</div><div class="tname">${S.season} ${phaseLabel[S.phase]}${S.phase === "regular" ? ` · day ${S.day}/${GM.lastDay()}` : ""}</div></div></div>
         <div class="score">
-          <div class="cell"><span class="lab">Record</span><span class="val accent">${rec(ut)}</span></div>
-          <div class="cell"><span class="lab">Power rank</span><span class="val">${ranks[ut.id]}<small style="font-size:.8rem;opacity:.6">/15</small></span></div>
-          <div class="cell"><span class="lab">Cap space</span><span class="val" style="color:${space < 0 ? "var(--bad)" : "inherit"}">${money(space)}</span></div>
-          <div class="cell"><span class="lab">Roster</span><span class="val">${GM.roster(ut.id).length}</span></div>
+          <div class="cell"><span class="lab">Teams</span><span class="val">${GM.activeTeams().length}</span></div>
+          <div class="cell"><span class="lab">Games</span><span class="val">${S.rules.games}</span></div>
+          <div class="cell"><span class="lab">Playoff spots</span><span class="val">${S.rules.playoffTeams}</span></div>
+          <div class="cell"><span class="lab">Reigning champ</span><span class="val accent">${champ ? esc(GM.T(champ.champion)?.abbr || "–") : "–"}</span></div>
           ${primaryAction()}
         </div>
       </div>
@@ -76,565 +53,406 @@
   }
   function primaryAction() {
     const S = GM.S;
-    switch (S.phase) {
-      case "preseason": return `<button class="btn primary" data-act="startSeason">Start ${S.season} season</button>`;
-      case "regular": return `<div class="row"><button class="btn" data-act="sim" data-n="1">Sim day</button><button class="btn primary" data-act="sim" data-n="7">Sim week</button></div>`;
-      case "playoffs": return S.playoffs.champion ? `<button class="btn primary" data-act="toDraft">Go to the draft</button>` : `<button class="btn primary" data-act="poRound">Sim round</button>`;
-      case "draft": return `<button class="btn primary" data-act="tab" data-tab="draft">Draft room</button>`;
-      case "resign": return `<button class="btn primary" data-act="toFA">Open free agency</button>`;
-      case "freeagency": return `<button class="btn primary" data-act="nextSeason">Start ${S.season} preseason</button>`;
-    }
-    return "";
+    if (S.phase === "preseason") return `<button class="btn primary" data-act="startSeason">Start ${S.season} season</button>`;
+    if (S.phase === "regular") return `<div class="row"><button class="btn" data-act="sim" data-n="7">Sim week</button><button class="btn primary" data-act="sim" data-n="999">Sim season</button></div>`;
+    if (S.phase === "playoffs") return S.playoffs.champion ? `<button class="btn primary" data-act="toOffseason">Open the offseason</button>` : `<button class="btn primary" data-act="po" data-mode="round">Sim round</button>`;
+    return `<button class="btn primary" data-act="advance">Go to ${S.season + 1}</button>`;
   }
 
-  // ---------- team picker ----------
-  function renderPicker() {
-    const teams = GM.previewTeams().sort((a, b) => b.rating - a.rating);
-    const cap = GM.data.econ.salaryCap;
+  // ---------- new league ----------
+  function renderSetup() {
+    const y = ui.setup.year;
+    const teams = GM.previewSeason(y);
+    const r = GM.eraRules(y);
+    const confs = [...new Set(teams.map((t) => t.conf).filter(Boolean))];
     $("#view").innerHTML = `
       <section class="hero">
-        <span class="eyebrow">Built on ${esc(GM.data.source)} · ${GM.data.baseSeason} season data</span>
-        <h1>Take over a <em>WNBA</em> franchise</h1>
-        <p>Every roster, rating and stat line starts from the real ${GM.data.baseSeason} season. Pick a team, then run it: trades, free agency, the draft, and ${GM.data.sim.games}-game seasons through the Finals. Teams are sorted by roster strength.</p>
+        <span class="eyebrow">Built on ${esc(D.source)} · seasons ${D.first}–${D.last}</span>
+        <h1>Run the <em>league</em></h1>
+        <p>Pick a season to start from. Every team, roster and rating comes from that real season. From there the league is yours: playoff format, conferences, expansion, relocation and contraction. The sim runs every front office, and real players arrive in their real draft years.</p>
         <p class="sub">Fan-made simulator. Not affiliated with or endorsed by the WNBA or its teams.</p>
       </section>
-      <div class="pickgrid">
-        ${teams.map((t) => `
-          <button class="tcard" style="--tc:${t.color}" data-act="pickTeam" data-id="${t.id}">
-            <div class="tt">${badge(t.id, true)}<div><b>${esc(t.city)}<br>${esc(t.name)}</b></div></div>
-            <div class="meta">
-              <div><span>${GM.data.baseSeason}</span><span>${t.last.w}-${t.last.l}</span></div>
-              <div><span>Rating</span><span>${t.rating.toFixed(1)}</span></div>
-              <div><span>Cap room</span><span>${money(cap - t.payroll)}</span></div>
-            </div>
-            <ul>${t.top.map((p) => `<li><span>${esc(p.name)}</span>${ovr(p.ovr)}</li>`).join("")}</ul>
-          </button>`).join("")}
-      </div>`;
+      <section class="panel">
+        <div class="panel-head"><h2>Start in ${y}</h2>
+          <label class="row">Season <select id="setupYear" data-act="setupYear">${Array.from({ length: D.last - D.first + 1 }, (_, i) => D.first + i).map((x) => `<option ${x === y ? "selected" : ""}>${x}</option>`).join("")}</select></label></div>
+        <input type="range" id="setupRange" min="${D.first}" max="${D.last}" value="${y}" aria-label="Start season" style="width:100%;accent-color:var(--accent)">
+        <div class="row sub"><span>${teams.length} teams</span>·<span>${confs.length ? confs.join(" / ") + " conferences" : "one table"}</span>·<span>${r.games} games</span>·<span>${r.playoffTeams} playoff teams</span>·<span>est. cap ${money(r.cap)}</span></div>
+        <div class="row">
+          <label class="row"><input type="checkbox" id="optReal" ${ui.setup.realCareers ? "checked" : ""}> Real players follow their real career arcs</label>
+          <label class="row"><input type="checkbox" id="optHist" ${ui.setup.followHistory ? "checked" : ""}> Real franchise moves come to me for approval</label>
+        </div>
+        <div class="row"><button class="btn primary" data-act="newLeague">Start the ${y} league</button></div>
+      </section>
+      <div class="pickgrid">${teams.map((t) => `
+        <div class="tcard" style="--tc:${t.color};cursor:default">
+          <div class="tt">${badgeRaw(t.abbr, t.color, true)}<div><b>${esc(t.city)}<br>${esc(t.name)}</b></div></div>
+          <div class="meta"><div><span>${y} record</span><span>${t.w}-${t.l}</span></div><div><span>Conf</span><span>${esc(t.conf || "–")}</span></div><div><span>Players</span><span>${t.n}</span></div></div>
+          <ul>${t.top.map((p) => `<li><span>${esc(p.name)}</span>${ovr(p.ovr)}</li>`).join("")}</ul>
+        </div>`).join("")}</div>`;
   }
 
-  // ---------- dashboard ----------
-  function renderDashboard() {
-    const S = GM.S, ut = S.userTeam, t = GM.T(ut);
-    const st = GM.standings();
-    const seed = st.findIndex((x) => x.id === ut) + 1;
-    const rating = GM.teamRating(ut);
-    const myGames = S.schedule.filter((g) => g.home === ut || g.away === ut);
-    const next = myGames.find((g) => !g.played);
-    const recent = myGames.filter((g) => g.played).slice(-6).reverse();
-    const news = S.news.filter((n) => !ui.newsMine || n.team === ut).slice(0, 40);
-    const top = GM.roster(ut).sort((a, b) => b.r.ovr - a.r.ovr).slice(0, 5);
-    const pf = t.w + t.l ? (t.pf / (t.w + t.l)).toFixed(1) : "–", pa = t.w + t.l ? (t.pa / (t.w + t.l)).toFixed(1) : "–";
-
+  // ---------- office ----------
+  function renderOffice() {
+    const S = GM.S;
+    const kinds = [["all", "All news"], ["office", "League office"], ["title", "Titles"], ["award", "Awards"], ["draft", "Draft"], ["trade", "Trades"], ["fa", "Free agency"], ["retire", "Retirements"], ["injury", "Injuries"]];
+    const news = S.news.filter((n) => ui.newsKind === "all" || n.kind === ui.newsKind).slice(0, 60);
+    const stars = Object.values(S.players).filter((p) => p.team && !p.retired).sort((a, b) => b.r.ovr - a.r.ovr).slice(0, 8);
     $("#view").innerHTML = `
-      <div class="kpis">
-        <div class="kpi"><span class="eyebrow">Standing</span><span class="v">${S.phase === "preseason" ? "–" : ordinal(seed)}</span><span class="n">${S.phase === "preseason" ? `${t.last && S.season === GM.data.startSeason ? `${GM.data.baseSeason}: ${t.last.w}-${t.last.l}` : "Season not started"}` : `${rec(t)} · top 8 make the playoffs`}</span></div>
-        <div class="kpi"><span class="eyebrow">Team rating</span><span class="v">${rating.toFixed(1)}</span><span class="n">Minutes-weighted OVR · ${GM.teamMode(ut) === "contend" ? "contender" : GM.teamMode(ut) === "rebuild" ? "rebuilding" : "middle of the pack"}</span></div>
-        <div class="kpi"><span class="eyebrow">Payroll</span><span class="v">${money(GM.payroll(ut))}</span><span class="n">Hard cap ${money(S.econ.cap)}</span></div>
-        <div class="kpi"><span class="eyebrow">Points for / against</span><span class="v">${pf}<span class="muted" style="font-size:1.1rem"> / ${pa}</span></span><span class="n">Per game</span></div>
-      </div>
-      ${phasePanel(next)}
+      ${phasePanel()}
       <div class="grid2">
         <section class="panel">
-          <div class="panel-head"><h3>League wire</h3><label class="row sub"><input type="checkbox" id="newsMine" data-act="newsMine" ${ui.newsMine ? "checked" : ""}> Only my team</label></div>
-          <div class="news">${news.map((n) => `<div class="${n.team === ut ? "mine" : ""}"><span class="when">${n.season} ${n.phase === "regular" ? "D" + n.day : (phaseLabel[n.phase] || "").slice(0, 4).toUpperCase()}</span>${esc(n.text)}</div>`).join("") || `<div class="empty">Nothing yet.</div>`}</div>
+          <div class="panel-head"><h3>League wire</h3><select id="newsKind" aria-label="Filter news">${kinds.map(([k, l]) => `<option value="${k}" ${ui.newsKind === k ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+          <div class="news">${news.map((n) => `<div class="${n.kind === "office" || n.kind === "title" ? "mine" : ""}"><span class="when">${n.season} ${n.phase === "regular" ? "D" + n.day : (phaseLabel[n.phase] || "").slice(0, 3).toUpperCase()}</span>${esc(n.text)}</div>`).join("") || `<div class="empty">Nothing yet.</div>`}</div>
         </section>
         <div style="display:grid;gap:18px">
-          <section class="panel">
-            <div class="panel-head"><h3>Standings</h3><button class="btn small" data-act="tab" data-tab="standings">Full table</button></div>
-            ${miniStandings(st)}
-          </section>
-          <section class="panel">
-            <div class="panel-head"><h3>Best players</h3><button class="btn small" data-act="tab" data-tab="roster">Roster</button></div>
-            <div class="tablewrap"><table><tbody>${top.map((p) => { const s = GM.perGame(p); return `<tr><td>${plink(p)}</td><td class="num">${ovr(p.r.ovr)}</td><td class="num muted">${s ? `${s.pts} / ${s.reb} / ${s.ast}` : lastLine(p)}</td></tr>`; }).join("")}</tbody></table></div>
-          </section>
-          ${recent.length ? `<section class="panel"><h3>Recent results</h3><div class="tablewrap"><table><tbody>${recent.map(gameRow).join("")}</tbody></table></div></section>` : ""}
+          <section class="panel"><div class="panel-head"><h3>Standings</h3><button class="btn small" data-act="tab" data-tab="standings">Full tables</button></div>${miniStandings()}</section>
+          <section class="panel"><h3>League's best</h3><div class="tablewrap"><table><tbody>${stars.map((p) => { const s = GM.perGame(p); return `<tr><td>${plink(p)}</td><td>${badge(p.team)}</td><td class="num">${ovr(p.r.ovr)}</td><td class="num muted">${s ? `${s.pts} / ${s.reb} / ${s.ast}` : `age ${GM.age(p)}`}</td></tr>`; }).join("")}</tbody></table></div></section>
         </div>
       </div>`;
   }
-  const ordinal = (n) => n + (["th", "st", "nd", "rd"][(n % 100 >> 3 ^ 1) && n % 10] || "th");
-  function lastLine(p) { const h = p.hist && p.hist[GM.data.baseSeason]; return h && h.gp ? `${GM.data.baseSeason}: ${f1(h.pts)} / ${f1(h.reb)} / ${f1(h.ast)}` : "–"; }
-  function gameRow(g) {
-    const ut = GM.S.userTeam, home = g.home === ut, opp = home ? g.away : g.home;
-    if (!g.played) return `<tr><td class="muted">Day ${g.day}</td><td>${home ? "vs" : "@"} ${badge(opp)} ${esc(GM.T(opp).name)}</td><td></td></tr>`;
-    const us = home ? g.hs : g.as, them = home ? g.as : g.hs;
-    return `<tr><td class="muted">Day ${g.day}</td><td>${home ? "vs" : "@"} ${badge(opp)} ${esc(GM.T(opp).name)}</td><td class="num"><span class="${us > them ? "w" : "l"}">${us > them ? "W" : "L"}</span> ${us}-${them}${g.ot ? " OT" : ""} <button class="btn small" data-act="box" data-gid="${g.gid}">Box</button></td></tr>`;
+  function miniStandings() {
+    const S = GM.S, confs = GM.activeConfs();
+    const conf = S.rules.seeding === "conference" && confs.length > 1;
+    const groups = conf ? confs.map((c) => [c, GM.standings(c)]) : [["League", GM.standings()]];
+    const cut = conf ? Math.round(S.rules.playoffTeams / confs.length) : S.rules.playoffTeams;
+    return groups.map(([c, st]) => `${conf ? `<span class="eyebrow">${esc(c)}</span>` : ""}<div class="tablewrap"><table><tbody>${st.map((t, i) => `<tr class="${i === cut - 1 && i < st.length - 1 ? "cutline" : ""}"><td class="muted">${i + 1}</td><td>${badge(t.fid)} ${tlink(t.fid)}</td><td class="num">${rec(t)}</td></tr>`).join("")}</tbody></table></div>`).join("");
   }
-  function miniStandings(st) {
-    const ut = GM.S.userTeam;
-    return `<div class="tablewrap"><table><thead><tr><th>#</th><th>Team</th><th class="num">W-L</th><th class="num">Diff</th></tr></thead><tbody>${st.map((t, i) => {
-      const gp = t.w + t.l;
-      return `<tr class="${t.id === ut ? "me" : ""}${i === 7 ? " cutline" : ""}"><td class="muted">${i + 1}</td><td>${badge(t.id)} ${esc(t.name)}</td><td class="num">${rec(t)}</td><td class="num">${gp ? f1((t.pf - t.pa) / gp) : "–"}</td></tr>`;
-    }).join("")}</tbody></table></div>`;
-  }
-
-  function phasePanel(next) {
-    const S = GM.S, ut = S.userTeam;
-    const n = GM.roster(ut).length;
+  function phasePanel() {
+    const S = GM.S, r = S.rules;
     if (S.phase === "preseason") {
-      const issues = [];
-      if (n < S.econ.rosterMin) issues.push(`Sign ${S.econ.rosterMin - n} more player${S.econ.rosterMin - n > 1 ? "s" : ""} (minimum ${S.econ.rosterMin}).`);
-      if (n > S.econ.rosterMax) issues.push(`Cut ${n - S.econ.rosterMax} player${n - S.econ.rosterMax > 1 ? "s" : ""} (maximum ${S.econ.rosterMax}).`);
       return `<section class="callout"><h3>Preseason ${S.season}</h3>
-        <div class="sub">Shape the roster before opening night: trade, sign free agents, and set your rotation on the Roster tab. ${issues.length ? "" : "Your roster is legal."}</div>
-        ${issues.map((x) => `<div class="chip bad">${x}</div>`).join(" ")}
-        <div class="row"><button class="btn primary" data-act="startSeason">Start the season</button><button class="btn" data-act="tab" data-tab="trade">Make a trade</button><button class="btn" data-act="tab" data-tab="fa">Free agents</button></div></section>`;
+        <div class="sub">The commissioner's office is open. Change the playoff format, rules or conferences, add a team, move one or fold one, then start the season.</div>
+        <div class="row sub"><span>${GM.activeTeams().length} teams</span>·<span>${r.games} games</span>·<span>${r.playoffTeams} playoff teams seeded ${r.seeding === "conference" ? "by conference" : "league-wide"}</span>·<span>best of ${r.earlyBo} / ${r.semisBo} / ${r.finalsBo}</span>·<span>cap ${money(r.cap)}</span></div>
+        <div class="row"><button class="btn primary" data-act="startSeason">Start the season</button><button class="btn" data-act="tab" data-tab="league">League office</button></div></section>`;
     }
-    if (S.phase === "regular") {
-      const dl = GM.tradeDeadlineDay();
-      return `<section class="callout"><div class="panel-head"><h3>Regular season · day ${S.day} of ${GM.lastDay()}</h3><span class="sub">${S.day <= dl ? `Trade deadline after day ${dl}` : "Trade deadline has passed"}</span></div>
-        ${next ? `<div>Next: ${next.home === ut ? "vs" : "@"} ${badge(next.home === ut ? next.away : next.home)} <b>${esc(GM.teamName(next.home === ut ? next.away : next.home))}</b> on day ${next.day}</div>` : ""}
-        <div class="row"><button class="btn" data-act="sim" data-n="1">Sim 1 day</button><button class="btn" data-act="sim" data-n="7">Sim 1 week</button>${S.day < dl ? `<button class="btn" data-act="sim" data-n="${dl - S.day}">Sim to trade deadline</button>` : ""}<button class="btn primary" data-act="sim" data-n="999">Sim to end of season</button></div></section>`;
-    }
+    if (S.phase === "regular") return `<section class="callout"><div class="panel-head"><h3>Regular season · day ${S.day} of ${GM.lastDay()}</h3><span class="sub">${S.rulesNext ? "Rule changes queued for next season" : ""}</span></div>
+      <div class="row"><button class="btn" data-act="sim" data-n="1">Sim 1 day</button><button class="btn" data-act="sim" data-n="7">Sim 1 week</button><button class="btn primary" data-act="sim" data-n="999">Sim to playoffs</button></div></section>`;
     if (S.phase === "playoffs") {
       const po = S.playoffs;
-      return `<section class="callout"><div class="panel-head"><h3>${po.champion ? `${esc(GM.teamName(po.champion))} win the title` : "Playoffs"}</h3>
-        ${po.champion ? `<span class="sub">Finals MVP: ${esc(GM.P(po.finalsMvp)?.name || "–")}</span>` : ""}</div>
-        ${bracket()}
-        ${awardsBlock(S.awards)}
-        <div class="row">${po.champion ? `<button class="btn primary" data-act="toDraft">Continue to the ${S.season} draft</button>` : `<button class="btn" data-act="poGame">Sim one game</button><button class="btn" data-act="poRound">Sim round</button><button class="btn primary" data-act="poAll">Sim to champion</button>`}</div></section>`;
+      return `<section class="callout"><div class="panel-head"><h3>${po.champion ? `The ${esc(GM.teamName(po.champion))} win the ${S.season} title` : `${S.season} playoffs`}</h3>${po.champion ? `<span class="sub">Finals MVP: ${esc(GM.P(po.finalsMvp)?.name || "–")}</span>` : ""}</div>
+        ${brackets()}${awardsBlock(S.awards)}
+        <div class="row">${po.champion ? `<button class="btn primary" data-act="toOffseason">Open the offseason</button>` : `<button class="btn" data-act="po" data-mode="game">Sim one game</button><button class="btn" data-act="po" data-mode="round">Sim round</button><button class="btn primary" data-act="po" data-mode="all">Sim to champion</button>`}</div></section>`;
     }
-    if (S.phase === "draft") {
-      const slot = GM.draftOnClock();
-      const mine = S.draft.slots.filter((s) => s.owner === ut && !s.player).map((s) => `#${s.pick}`);
-      return `<section class="callout"><h3>${S.season} draft</h3><div class="sub">${slot ? `Pick ${slot.pick} on the clock: ${esc(GM.teamName(slot.owner))}.` : ""} Your remaining picks: ${mine.join(", ") || "none"}.</div>
-        <div class="row"><button class="btn primary" data-act="tab" data-tab="draft">Go to the draft room</button></div></section>`;
-    }
-    if (S.phase === "resign") {
-      const exp = GM.roster(ut).filter((p) => p.expiring || p.resign);
-      return `<section class="callout"><h3>Expiring contracts</h3>
-        <div class="sub">These players' deals are up. Re-sign them at their asking price or let them walk into free agency. Re-signed salaries count against next season's cap of about ${money(S.econ.cap * (1 + S.econ.growth))}.</div>
-        ${exp.length ? `<div class="tablewrap"><table><thead><tr><th>Player</th><th class="num">Age</th><th class="num">OVR</th><th class="num">POT</th><th class="num">Asking</th><th></th></tr></thead><tbody>
-          ${exp.map((p) => `<tr><td>${plink(p)}</td><td class="num">${p.age}</td><td class="num">${ovr(p.r.ovr)}</td><td class="num">${rt(p.r.pot)}</td><td class="num">${money(p.ask.sal)} × ${p.ask.yrs}</td><td class="num">${p.resign ? `<span class="chip good">Re-signed</span>` : p.declined ? `<span class="chip">Leaving</span>` : `<button class="btn small primary" data-act="resign" data-id="${p.id}">Re-sign</button> <button class="btn small" data-act="letgo" data-id="${p.id}">Let go</button>`}</td></tr>`).join("")}
-        </tbody></table></div>` : `<div class="empty">No expiring contracts on your roster.</div>`}
-        <div class="row"><button class="btn primary" data-act="toFA">Open free agency</button></div></section>`;
-    }
-    if (S.phase === "freeagency") {
-      return `<section class="callout"><h3>Free agency · day ${S.faDay}</h3>
-        <div class="sub">Make offers on the Free agents tab. Each day you advance, other teams sign players too. Cap for ${S.season}: ${money(S.econ.cap)}. You have ${n} players under contract.</div>
-        <div class="row"><button class="btn" data-act="tab" data-tab="fa">Free agents</button><button class="btn" data-act="faDay">Advance one day</button><button class="btn primary" data-act="nextSeason">Start ${S.season} preseason</button></div></section>`;
-    }
-    return "";
+    const h = S.history[0], ev = GM.pendingEvents();
+    return `<section class="callout"><div class="panel-head"><h3>${S.season} offseason</h3><span class="sub">${h ? `Champion: ${esc(h.champName)}` : ""}</span></div>
+      ${awardsBlock(S.awards)}
+      ${ev.length ? `<div style="display:grid;gap:6px"><b>Real league history for ${S.season + 1}: approve or veto</b>${ev.map(eventRow).join("")}</div>` : `<div class="sub">No real-life franchise moves are scheduled for ${S.season + 1}.</div>`}
+      <div class="sub">When you move on, the sim runs the ${S.season + 1} draft${S.season + 1 <= D.last ? " with the real draft class" : ""}, contract decisions, free agency, player development and retirements. You can still make changes in the preseason.</div>
+      <div class="row"><button class="btn primary" data-act="advance">Run the offseason → ${S.season + 1} preseason</button><button class="btn" data-act="tab" data-tab="league">League office</button></div></section>`;
+  }
+  function eventRow(e) {
+    return `<div class="row"><span class="chip ${e.approved ? "good" : "bad"}">${e.approved ? "Approved" : "Vetoed"}</span><span>${esc(e.text)}</span><span class="spacer"></span>
+      <button class="btn small" data-act="event" data-id="${esc(e.id)}" data-ok="${e.approved ? 0 : 1}">${e.approved ? "Veto" : "Approve"}</button></div>`;
   }
   function awardsBlock(a) {
     if (!a) return "";
-    const item = (lab, id) => id ? `<div><span class="eyebrow">${lab}</span><div>${plink(GM.P(id))} <span class="muted">${GM.P(id).team || ""}</span></div></div>` : "";
+    const item = (lab, id) => id && GM.P(id) ? `<div><span class="eyebrow">${lab}</span><div>${plink(GM.P(id))} <span class="muted">${esc(GM.T(GM.P(id).team)?.abbr || "")}</span></div></div>` : "";
     return `<div class="grid3">${item("MVP", a.mvp)}${item("Defensive POY", a.dpoy)}${item("Rookie of the Year", a.roy)}</div>`;
   }
-  function bracket() {
+  function brackets() {
     const po = GM.S.playoffs; if (!po) return "";
-    const names = ["First round · best of 3", "Semifinals · best of 5", "Finals · best of 7"];
-    const seed = (id) => po.seeds.indexOf(id) + 1;
-    return `<div class="bracket">${[0, 1, 2].map((r) => `<div style="display:grid;gap:8px;align-content:start"><span class="eyebrow">${names[r]}</span>${(po.rounds[r] || []).map((s) => `
-      <div class="series">${[[s.hi, s.wh], [s.lo, s.wl]].map(([id, w]) => `<div class="s ${s.winner ? (s.winner === id ? "win" : "lose") : ""}"><span>${badge(id)} <span class="muted">${seed(id)}</span> ${esc(GM.T(id).name)}</span><b>${w}</b></div>`).join("")}</div>`).join("") || `<div class="series muted">TBD</div>`}</div>`).join("")}</div>`;
+    const one = (br) => {
+      const rounds = br.rounds;
+      return `<div style="display:grid;gap:8px;min-width:0"><span class="eyebrow">${esc(br.label)}</span><div class="bracket" style="grid-template-columns:repeat(${Math.max(1, rounds.length)},minmax(160px,1fr))">
+        ${rounds.map((rd) => `<div style="display:grid;gap:8px;align-content:start">${rd.map((s) => s.lo ? `<div class="series"><span class="eyebrow">Best of ${s.bestOf}</span>${[[s.hi, s.wh], [s.lo, s.wl]].map(([id, w]) => `<div class="s ${s.winner ? (s.winner === id ? "win" : "lose") : ""}"><span>${badge(id)} <span class="muted">${br.seeds.indexOf(id) + 1}</span> ${esc(GM.T(id).name)}</span><b>${w}</b></div>`).join("")}</div>`
+          : `<div class="series"><div class="s"><span>${badge(s.hi)} <span class="muted">${br.seeds.indexOf(s.hi) + 1}</span> ${esc(GM.T(s.hi).name)}</span><span class="chip">Bye</span></div></div>`).join("")}</div>`).join("") || `<div class="series">${br.champion ? `${badge(br.champion)} advances` : "TBD"}</div>`}
+      </div></div>`;
+    };
+    return `<div style="display:grid;gap:14px">${po.brackets.map(one).join("")}${po.final ? one(po.final) : po.brackets.length > 1 ? `<div class="sub">The conference champions meet in the Finals.</div>` : ""}</div>`;
   }
 
-  // ---------- roster ----------
-  function renderRoster() {
-    const S = GM.S, ut = S.userTeam;
-    const rot = GM.rotation(ut, true);
-    const order = rot.map((x) => x.id);
-    const mins = Object.fromEntries(rot.map((x) => [x.id, x.min]));
-    const ps = GM.roster(ut);
-    const all = [...order.map(GM.P), ...ps.filter((p) => !order.includes(p.id)).sort((a, b) => b.r.ovr - a.r.ovr)];
-    const custom = !!GM.T(ut).rotation;
-    const dead = GM.T(ut).dead.filter((d) => d.season === S.season);
-    $("#view").innerHTML = `
-      <section class="panel">
-        <div class="panel-head"><div><h2>Roster</h2><div class="sub">${ps.length} players · payroll ${money(GM.payroll(ut))} of ${money(S.econ.cap)} · rotation is ${custom ? "custom" : "automatic (best OVR plays most)"}</div></div>
-          <div class="row">${custom ? `<button class="btn" data-act="autoRot">Reset to automatic</button>` : ""}</div></div>
-        <div class="sub">Use the arrows to set the rotation: the top five start, and minutes follow the order (${[34, 32, 30, 28, 26, 20, 14, 8, 5, 3].join(", ")}). Injured players sit automatically.</div>
-        <div class="tablewrap"><table>
-          <thead><tr><th></th><th>Player</th><th class="num">Min</th><th class="num">Age</th><th class="num">OVR</th><th class="num">POT</th><th class="num">INS</th><th class="num">3PT</th><th class="num">PLY</th><th class="num">REB</th><th class="num">DEF</th><th class="num">GP</th><th class="num">PTS</th><th class="num">REB</th><th class="num">AST</th><th class="num">Salary</th><th class="num">Yrs</th><th>Status</th><th></th></tr></thead>
-          <tbody>${all.map((p, i) => {
-            const s = GM.perGame(p);
-            const inRot = i < order.length;
-            return `<tr>
-              <td><button class="btn small" data-act="rotUp" data-id="${p.id}" ${i === 0 ? "disabled" : ""} aria-label="Move up">▲</button><button class="btn small" data-act="rotDown" data-id="${p.id}" ${i === all.length - 1 ? "disabled" : ""} aria-label="Move down">▼</button></td>
-              <td>${i < 5 ? `<span class="chip accent">S</span> ` : ""}${plink(p)}</td>
-              <td class="num">${inRot ? Math.round(mins[p.id]) : `<span class="muted">–</span>`}</td>
-              <td class="num">${p.age}</td><td class="num">${ovr(p.r.ovr)}</td><td class="num">${rt(p.r.pot)}</td>
-              <td class="num">${rt(p.r.ins)}</td><td class="num">${rt(p.r.thr)}</td><td class="num">${rt(p.r.ply)}</td><td class="num">${rt(p.r.reb)}</td><td class="num">${rt(p.r.def)}</td>
-              <td class="num">${s ? s.gp : "–"}</td><td class="num">${s ? s.pts : "–"}</td><td class="num">${s ? s.reb : "–"}</td><td class="num">${s ? s.ast : "–"}</td>
-              <td class="num">${money(p.c.sal)}</td><td class="num">${p.c.yrs}</td>
-              <td>${p.inj ? `<span class="chip bad">Out ${p.inj}g</span>` : ""}${p.expiring ? `<span class="chip warn">Expiring</span>` : ""}${p.c.rookie ? `<span class="chip">Rookie deal</span>` : ""}</td>
-              <td>${ui.confirm === "rel" + p.id ? `<button class="btn small danger" data-act="release" data-id="${p.id}">Confirm release</button> <button class="btn small" data-act="cancel">Keep</button>` : `<button class="btn small" data-act="askRelease" data-id="${p.id}">Release</button>`}</td>
-            </tr>`; }).join("")}</tbody>
-        </table></div>
-        <div class="sub">Releasing a player keeps this season's salary on your cap as dead money (half in the offseason; second- and third-round rookie deals are non-guaranteed).${dead.length ? ` Dead money this season: ${dead.map((d) => `${esc(d.name)} ${money(d.sal)}`).join(", ")}.` : ""}</div>
-      </section>`;
+  // ---------- standings / playoffs ----------
+  function renderStandings() {
+    const S = GM.S, confs = GM.activeConfs();
+    const conf = confs.length > 1;
+    const cutConf = S.rules.seeding === "conference" && conf;
+    const per = cutConf ? Math.round(S.rules.playoffTeams / confs.length) : S.rules.playoffTeams;
+    const table = (title, st, cut) => `<section class="panel"><h2>${esc(title)}</h2><div class="tablewrap"><table><thead><tr><th>#</th><th>Team</th><th class="num">W</th><th class="num">L</th><th class="num">PCT</th><th class="num">GB</th><th class="num">Home</th><th class="num">Away</th><th class="num">PF</th><th class="num">PA</th><th class="num">Diff</th><th class="num">Strk</th><th class="num">Rating</th></tr></thead><tbody>
+      ${st.map((t, i) => { const gp = t.w + t.l, gb = ((st[0].w - t.w) + (t.l - st[0].l)) / 2; return `<tr class="${cut && i === cut - 1 && i < st.length - 1 ? "cutline" : ""}"><td class="muted">${i + 1}</td><td>${badge(t.fid)} ${tlink(t.fid)}</td><td class="num">${t.w}</td><td class="num">${t.l}</td><td class="num">${gp ? (t.w / gp).toFixed(3).replace(/^0/, "") : "–"}</td><td class="num">${gb ? gb.toFixed(1) : "–"}</td><td class="num">${t.hw}-${t.hl}</td><td class="num">${t.w - t.hw}-${t.l - t.hl}</td><td class="num">${gp ? f1(t.pf / gp) : "–"}</td><td class="num">${gp ? f1(t.pa / gp) : "–"}</td><td class="num">${gp ? f1((t.pf - t.pa) / gp) : "–"}</td><td class="num">${t.streak ? (t.streak > 0 ? "W" + t.streak : "L" + -t.streak) : "–"}</td><td class="num">${GM.teamRating(t.fid).toFixed(1)}</td></tr>`; }).join("")}
+      </tbody></table></div></section>`;
+    const br = bestReal(S.season);
+    $("#view").innerHTML = (conf ? confs.map((c) => table(`${c} · ${S.season}`, GM.standings(c), cutConf ? per : 0)).join("") : "")
+      + table(conf ? `League table · ${S.season}` : `Standings · ${S.season}`, GM.standings(), cutConf ? 0 : per)
+      + `<div class="sub">The dashed line marks the playoff cut (${cutConf ? `top ${per} per conference` : `top ${per} overall`}).${br ? ` In real life, ${S.season}'s best record belonged to ${esc(br.city)} ${esc(br.name)} at ${br.w}-${br.l}.` : ""}</div>`;
   }
-  function moveRot(id, dir) {
-    const ut = GM.S.userTeam;
-    const rot = GM.rotation(ut, true).map((x) => x.id);
-    const rest = GM.roster(ut).filter((p) => !rot.includes(p.id)).sort((a, b) => b.r.ovr - a.r.ovr).map((p) => p.id);
-    const all = rot.concat(rest);
-    const i = all.indexOf(id), j = i + dir;
-    if (i < 0 || j < 0 || j >= all.length) return;
-    [all[i], all[j]] = [all[j], all[i]];
-    GM.setRotation(all);
+  function renderPlayoffs() {
+    const S = GM.S, r = S.rules;
+    $("#view").innerHTML = S.playoffs ? `<section class="panel"><h2>${S.season} playoffs</h2>${brackets()}${S.phase === "playoffs" && !S.playoffs.champion ? `<div class="row"><button class="btn" data-act="po" data-mode="game">Sim one game</button><button class="btn" data-act="po" data-mode="round">Sim round</button><button class="btn primary" data-act="po" data-mode="all">Sim to champion</button></div>` : ""}</section>`
+      : `<section class="panel"><h2>Playoffs</h2><div class="empty">The bracket appears when the regular season ends. Format: ${r.playoffTeams} teams seeded ${r.seeding === "conference" ? "by conference" : "league-wide"}, best of ${r.earlyBo} in early rounds, ${r.semisBo} in the semifinals and ${r.finalsBo} in the Finals.</div></section>`;
   }
 
-  // ---------- player modal ----------
-  function playerModal(id) {
-    const S = GM.S, p = GM.P(id); if (!p) return "";
-    const t = GM.T(p.team);
-    const s = GM.perGame(p);
-    const bars = [["OVR", p.r.ovr, "Overall"], ["POT", p.r.pot, "Potential"], ["INS", p.r.ins, "Inside scoring"], ["3PT", p.r.thr, "3-point shooting"], ["FT", p.r.fts, "Free throws"], ["PLY", p.r.ply, "Playmaking"], ["REB", p.r.reb, "Rebounding"], ["DEF", p.r.def, "Defense"], ["ATH", p.r.ath, "Athleticism"]];
-    const base = p.last || (p.hist && p.hist[GM.data.baseSeason]);
-    const career = [];
-    const realSeasons = Object.keys(p.hist || {}).map(Number).sort((x, y) => x - y);
-    for (const yr of realSeasons) { const h = p.hist[yr]; if (h && h.gp) career.push({ season: yr, team: h.team || "–", gp: h.gp, min: h.min, pts: h.pts, reb: h.reb, ast: h.ast, stl: h.stl, blk: h.blk, fg: h.fg_pct, tp: h.fg3_pct, ft: h.ft_pct, real: true }); }
-    for (const c of p.career) career.push(c);
-    if (s) career.push({ season: S.season, ...s, cur: true });
-    if (career.length > 1) {
-      const g = career.reduce((t, c) => t + c.gp, 0);
-      const avg = (k) => career.reduce((t, c) => t + (c[k] || 0) * c.gp, 0) / g;
-      career.push({ season: "Career", team: `${career.length} seasons`, gp: g, min: avg("min"), pts: avg("pts"), reb: avg("reb"), ast: avg("ast"), stl: avg("stl"), blk: avg("blk"), fg: avg("fg"), tp: avg("tp"), ft: avg("ft"), total: true });
-    }
-    const isMine = p.team === S.userTeam;
-    const scouted = p.prospect && p.scout;
-    let actions = "";
-    if (isMine) actions = `<button class="btn" data-act="tab" data-tab="roster">Manage on roster</button>`;
-    else if (p.team && GM.tradesOpen()) actions = `<button class="btn primary" data-act="tradeFor" data-id="${p.id}">Trade for her</button>`;
-    else if (!p.team && !p.prospect && !p.retired) actions = `<button class="btn primary" data-act="offerFrom" data-id="${p.id}">Make an offer</button>`;
-    return `<div class="modal-bg" data-act="closeModal"><div class="modal" style="--tc:${t ? t.color : "var(--tier-4)"}" role="dialog" aria-modal="true" aria-label="${esc(p.name)}" data-stop>
-      <div class="modal-head"><div class="row">${badge(p.team, true)}<div><h2>${esc(p.name)}</h2><div class="sub">${esc(p.pos)} · ${ht(p.ht)} · age ${p.age} · ${p.exp ? `${p.exp} yrs exp` : "rookie"}${p.school ? ` · ${esc(p.school)}` : ""}</div></div></div><button class="btn" data-act="closeModal">Close</button></div>
-      <div class="row">${t ? `<span class="chip">${esc(t.city)} ${esc(t.name)}</span>` : p.retired ? `<span class="chip">Retired ${p.retired}</span>` : p.prospect ? `<span class="chip accent">${p.prospect} draft prospect</span>` : `<span class="chip warn">Free agent${p.ask ? ` · asking ${money(p.ask.sal)} × ${p.ask.yrs}` : ""}</span>`}
-        ${p.team ? `<span class="chip">${money(p.c.sal)} × ${p.c.yrs} yr${p.c.yrs === 1 ? "" : "s"}</span>` : ""}${p.inj ? `<span class="chip bad">${esc(p.injType)} · out ${p.inj} games</span>` : ""}${p.acq ? `<span class="chip">${esc(p.acq)}</span>` : ""}${p.real ? "" : `<span class="chip">Generated player</span>`}</div>
-      ${scouted ? `<div class="callout"><b>Scouting report</b><div>Your scouts project her at ${ovr(p.scout.ovr)} now with a ceiling around ${rt(p.scout.pot)}. Estimates carry a few points of error either way.</div></div>`
-        : `<div class="bars">${bars.map(([l, v, full]) => `<div class="bar" title="${full}"><span class="eyebrow">${l}</span><div class="track"><div class="fill" style="width:${v}%"></div></div><b>${v}</b></div>`).join("")}</div>`}
-      ${career.length ? `<div class="tablewrap" style="max-height:340px;overflow-y:auto"><table><thead><tr><th>Season</th><th>Team</th><th class="num">GP</th><th class="num">MIN</th><th class="num">PTS</th><th class="num">REB</th><th class="num">AST</th><th class="num">STL</th><th class="num">BLK</th><th class="num">FG%</th><th class="num">3P%</th><th class="num">FT%</th></tr></thead><tbody>
-        ${career.map((c) => `<tr${c.total ? ' style="font-weight:700"' : ""}><td>${c.season}${c.real ? ' <span class="chip">real</span>' : c.cur ? ' <span class="chip accent">now</span>' : ""}</td><td>${esc(c.team)}</td><td class="num">${c.gp}</td><td class="num">${f1(c.min)}</td><td class="num">${f1(c.pts)}</td><td class="num">${f1(c.reb)}</td><td class="num">${f1(c.ast)}</td><td class="num">${f1(c.stl)}</td><td class="num">${f1(c.blk)}</td><td class="num">${pct(c.fg)}</td><td class="num">${pct(c.tp)}</td><td class="num">${pct(c.ft)}</td></tr>`).join("")}
-      </tbody></table></div>` : `<div class="empty">No WNBA stats yet.</div>`}
-      ${base && base.bpm != null ? `<div class="sub">${GM.data.baseSeason} impact: BPM ${f1(base.bpm)} · WAR ${base.war ?? "–"} · TS% ${pct(base.ts)}</div>` : ""}
-      <div class="row">${actions}</div>
+  // ---------- teams ----------
+  function renderTeams() {
+    const S = GM.S;
+    const ts = GM.activeTeams().slice().sort((a, b) => GM.teamRating(b.fid) - GM.teamRating(a.fid));
+    const gone = S.teams.filter((t) => !t.active);
+    const mode = (f) => ({ contend: "Contending", rebuild: "Rebuilding", neutral: "Middle" }[GM.teamMode(f)]);
+    $("#view").innerHTML = `<div class="pickgrid">${ts.map((t) => {
+      const top = GM.roster(t.fid).sort((a, b) => b.r.ovr - a.r.ovr).slice(0, 3);
+      return `<button class="tcard" style="--tc:${t.color}" data-act="team" data-id="${t.fid}">
+        <div class="tt">${badge(t.fid, true)}<div><b>${esc(t.city)}<br>${esc(t.name)}</b></div></div>
+        <div class="meta"><div><span>Record</span><span>${rec(t)}</span></div><div><span>Rating</span><span>${GM.teamRating(t.fid).toFixed(1)}</span></div><div><span>Titles</span><span>${t.titles}</span></div></div>
+        <div class="row sub"><span>${esc(t.conf)}</span>·<span>${mode(t.fid)}</span>·<span>payroll ${money(GM.payroll(t.fid))}</span></div>
+        <ul>${top.map((p) => `<li><span>${esc(p.name)}</span>${ovr(p.r.ovr)}</li>`).join("")}</ul></button>`; }).join("")}</div>
+      ${gone.length ? `<section class="panel"><h3>Defunct franchises</h3>${gone.map((t) => `<div class="row">${badge(t.fid)} <button class="plink" data-act="team" data-id="${t.fid}">${esc(t.city)} ${esc(t.name)}</button><span class="muted">folded ${t.folded} · ${t.titles} title${t.titles === 1 ? "" : "s"}</span></div>`).join("")}</section>` : ""}`;
+  }
+  function teamModal(fid) {
+    const S = GM.S, t = GM.T(fid); if (!t) return "";
+    const ps = GM.roster(fid).sort((a, b) => b.r.ovr - a.r.ovr);
+    const open = GM.officeOpen() && t.active;
+    const conf = ui.confirm === "fold" + fid;
+    return `<div class="modal-bg" data-act="closeModal"><div class="modal" style="--tc:${t.color}" role="dialog" aria-modal="true" aria-label="${esc(t.city)} ${esc(t.name)}" data-stop>
+      <div class="modal-head"><div class="row">${badge(fid, true)}<div><h2>${esc(t.city)} ${esc(t.name)}</h2><div class="sub">${t.active ? `${esc(t.conf)} · ${rec(t)} · rating ${GM.teamRating(fid).toFixed(1)} · payroll ${money(GM.payroll(fid))} of ${money(S.rules.cap)}` : `Folded ${t.folded}`} · ${t.titles} title${t.titles === 1 ? "" : "s"}</div></div></div><button class="btn" data-act="closeModal">Close</button></div>
+      ${t.active ? `<div class="tablewrap"><table><thead><tr><th>Player</th><th class="num">Age</th><th class="num">OVR</th><th class="num">POT</th><th class="num">GP</th><th class="num">PTS</th><th class="num">REB</th><th class="num">AST</th><th class="num">Salary</th><th class="num">Yrs</th><th></th></tr></thead><tbody>
+        ${ps.map((p) => { const s = GM.perGame(p); return `<tr><td>${plink(p)}</td><td class="num">${GM.age(p)}</td><td class="num">${ovr(p.r.ovr)}</td><td class="num">${rt(p.r.pot)}</td><td class="num">${s ? s.gp : "–"}</td><td class="num">${s ? s.pts : "–"}</td><td class="num">${s ? s.reb : "–"}</td><td class="num">${s ? s.ast : "–"}</td><td class="num">${money(p.c.sal)}</td><td class="num">${p.c.yrs}</td><td>${p.inj ? `<span class="chip bad">${p.inj >= 999 ? "Out for season" : "Out " + p.inj + "g"}</span>` : ""}</td></tr>`; }).join("")}
+      </tbody></table></div>` : ""}
+      ${t.hist.length ? `<details><summary class="eyebrow" style="cursor:pointer">Franchise history (${t.hist.length} season${t.hist.length === 1 ? "" : "s"})</summary><div class="tablewrap"><table><tbody>${t.hist.slice().reverse().map((h) => `<tr><td>${h.season}</td><td>${esc(h.name)}</td><td class="num">${h.w}-${h.l}</td><td>${h.res === "Champion" ? '<span class="chip accent">Champion</span>' : esc(h.res)}</td></tr>`).join("")}</tbody></table></div></details>` : ""}
+      ${open ? `<div class="callout"><b>Commissioner actions</b>
+        <div class="row"><label class="row">Conference <select data-act="teamConf" data-id="${fid}" aria-label="Conference">${S.conferences.map((c) => `<option ${c === t.conf ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></label></div>
+        <div class="row"><input type="text" id="relCity" value="${esc(t.city)}" aria-label="City" placeholder="City"><input type="text" id="relName" value="${esc(t.name)}" aria-label="Nickname" placeholder="Nickname"><input type="text" id="relAbbr" value="${esc(t.abbr)}" maxlength="3" size="4" aria-label="Abbreviation"><input type="color" id="relColor" value="${/^#[0-9a-f]{6}$/i.test(t.color) ? t.color : "#666666"}" aria-label="Team color"><button class="btn" data-act="relocate" data-id="${fid}">Relocate / rename</button></div>
+        <div class="row">${conf ? `<span>Fold the ${esc(t.name)}? Their players go to a dispersal draft.</span><button class="btn danger" data-act="fold" data-id="${fid}">Fold the franchise</button><button class="btn" data-act="cancel">Keep them</button>` : `<button class="btn danger" data-act="askFold" data-id="${fid}">Fold this franchise…</button>`}</div></div>`
+        : t.active ? `<div class="sub">Franchise changes open in the preseason and offseason.</div>` : ""}
     </div></div>`;
   }
 
-  function boxModal(gid) {
-    const b = GM.S.boxes[gid]; if (!b) return "";
-    const tbl = (tid) => `<h3>${badge(tid)} ${esc(GM.teamName(tid))} · ${tid === b.home ? b.hs : b.as}</h3><div class="tablewrap"><table><thead><tr><th>Player</th><th class="num">MIN</th><th class="num">PTS</th><th class="num">REB</th><th class="num">AST</th><th class="num">STL</th><th class="num">BLK</th><th class="num">TO</th><th class="num">FG</th><th class="num">3PT</th><th class="num">FT</th></tr></thead><tbody>
-      ${b.players[tid].map((l) => { const p = GM.P(l.id); return `<tr><td>${l.start ? "" : '<span class="muted">· </span>'}${p ? plink(p) : "–"}</td><td class="num">${l.min}</td><td class="num"><b>${l.pts}</b></td><td class="num">${l.reb}</td><td class="num">${l.ast}</td><td class="num">${l.stl}</td><td class="num">${l.blk}</td><td class="num">${l.tov}</td><td class="num">${l.fgm}-${l.fga}</td><td class="num">${l.tpm}-${l.tpa}</td><td class="num">${l.ftm}-${l.fta}</td></tr>`; }).join("")}</tbody></table></div>`;
-    return `<div class="modal-bg" data-act="closeModal"><div class="modal" role="dialog" aria-modal="true" aria-label="Box score" data-stop>
-      <div class="modal-head"><h2>${esc(GM.T(b.away).name)} ${b.as} @ ${esc(GM.T(b.home).name)} ${b.hs}${b.ot ? ` (${b.ot > 1 ? b.ot : ""}OT)` : ""}</h2><button class="btn" data-act="closeModal">Close</button></div>
-      ${tbl(b.away)}${tbl(b.home)}</div></div>`;
-  }
-
-  // ---------- trade ----------
-  function renderTrade() {
-    const S = GM.S, ut = S.userTeam, tr = ui.trade;
-    const others = S.teams.filter((t) => t.id !== ut);
-    if (!tr.partner) tr.partner = others[0].id;
-    const partner = tr.partner;
-    const mode = GM.teamMode(partner);
-    const ev = GM.evaluateTrade(partner, [...tr.give], [...tr.get], [...tr.givePicks], [...tr.getPicks]);
-    const sal = (ids) => [...ids].reduce((s, id) => s + GM.P(id).c.sal, 0);
-    const pickList = (owner, set, side) => S.picks.map((pk, k) => ({ pk, k })).filter((x) => x.pk.owner === owner)
-      .map(({ pk, k }) => `<label class="pickrow ${set.has(k) ? "on" : ""}"><input type="checkbox" data-act="tpick" data-side="${side}" data-k="${k}" ${set.has(k) ? "checked" : ""}><span class="grow">${esc(GM.pickLabel(pk))}</span></label>`).join("");
-    const playerList = (tid, set, side) => GM.roster(tid).sort((a, b) => b.r.ovr - a.r.ovr).map((p) => `
-      <label class="pickrow ${set.has(p.id) ? "on" : ""}"><input type="checkbox" data-act="tsel" data-side="${side}" data-id="${p.id}" ${set.has(p.id) ? "checked" : ""}>
-      ${ovr(p.r.ovr)}<span class="grow"><b>${esc(p.name)}</b> <span class="pos">${esc(p.pos)} · ${p.age}y · pot ${p.r.pot}${p.inj ? " · injured" : ""}</span></span><span class="muted">${money(p.c.sal)}×${p.c.yrs}</span></label>`).join("");
-    const ratio = Math.min(1.5, ev.ratio);
-    const color = ev.ratio >= 1 ? "var(--good)" : ev.ratio >= 0.8 ? "var(--warn)" : "var(--bad)";
-    const verdict = ev.ratio >= 1 ? "They'd take this deal." : ev.ratio >= 0.85 ? "Close. They want a bit more." : ev.ratio >= 0.6 ? "Not enough value for them." : "They'd hang up on this.";
-    $("#view").innerHTML = `
-      <section class="panel">
-        <div class="panel-head"><div><h2>Trade</h2><div class="sub">${GM.tradesOpen() ? (S.phase === "regular" ? `Deadline after day ${GM.tradeDeadlineDay()}.` : "Trades are open.") : "Trades are closed right now."} Hard cap: both teams must stay under ${money(S.econ.cap)} unless the deal lowers their payroll.</div></div>
-          <label class="row">Trade partner <select id="partner" data-act="partner">${others.map((t) => `<option value="${t.id}" ${t.id === partner ? "selected" : ""}>${esc(t.city)} ${esc(t.name)} (${rec(t)})</option>`).join("")}</select></label></div>
-        <div class="callout">
-          <div class="panel-head"><b>${verdict}</b><span class="sub">${esc(GM.T(partner).name)} are ${mode === "contend" ? "contending: they value current production" : mode === "rebuild" ? "rebuilding: they value youth, potential and picks" : "in the middle: they value overall talent"}</span></div>
-          <div class="meter" aria-label="Trade value meter"><div class="fill" style="width:${(ratio / 1.5) * 100}%;background:${color}"></div><div class="mark" title="Acceptance line"></div></div>
-          <div class="row sub"><span>You send ${money(sal(tr.give))}</span>·<span>You take back ${money(sal(tr.get))}</span>·<span>Your payroll after: ${money(GM.payroll(ut) - sal(tr.give) + sal(tr.get))}</span></div>
-          ${ev.issues.map((x) => `<div class="chip bad">${esc(x)}</div>`).join(" ")}
-          ${tr.msg ? `<div>${esc(tr.msg)}</div>` : ""}
-          <div class="row"><button class="btn primary" data-act="propose" ${ev.issues.length ? "disabled" : ""}>Propose trade</button><button class="btn" data-act="balance">What would make this work?</button><button class="btn" data-act="clearTrade">Clear</button></div>
-        </div>
-        <div class="tradecols">
-          <div style="display:grid;gap:6px;min-width:0"><h3>You give · ${esc(GM.T(ut).name)}</h3>${playerList(ut, tr.give, "give")}<span class="eyebrow" style="margin-top:8px">Draft picks</span>${pickList(ut, tr.givePicks, "give") || `<div class="empty">No picks.</div>`}</div>
-          <div style="display:grid;gap:6px;min-width:0"><h3>You get · ${esc(GM.T(partner).name)}</h3>${playerList(partner, tr.get, "get")}<span class="eyebrow" style="margin-top:8px">Draft picks</span>${pickList(partner, tr.getPicks, "get") || `<div class="empty">No picks.</div>`}</div>
-        </div>
-      </section>
-      ${S.tradeLog.length ? `<section class="panel"><h3>Your trade history</h3>${S.tradeLog.slice(0, 15).map((x) => `<div class="sub">${x.season}: ${esc(x.text)}</div>`).join("")}</section>` : ""}`;
-  }
-
-  // ---------- free agents ----------
-  function renderFA() {
-    const S = GM.S, ut = S.userTeam;
-    const fas = GM.freeAgents();
-    sortRows(fas, "fa", { col: "ovr", dir: -1, get: (p) => p.r.ovr });
-    const space = GM.capSpace(ut), n = GM.roster(ut).length;
-    $("#view").innerHTML = `
-      <section class="panel">
-        <div class="panel-head"><div><h2>Free agents</h2><div class="sub">${fas.length} available · your cap space ${money(space)} · roster ${n}/${S.econ.rosterMax}. Minimum deals (${money(S.econ.min)}) are allowed over the cap while you're below ${S.econ.rosterMin} players.</div></div>
-          ${S.phase === "freeagency" ? `<button class="btn" data-act="faDay">Advance one day</button>` : ""}</div>
-        <div class="tablewrap"><table>
-          <thead><tr><th>Player</th>${th("Age", "fa", "age")}${th("OVR", "fa", "ovr")}${th("POT", "fa", "pot")}<th class="num">INS</th><th class="num">3PT</th><th class="num">PLY</th><th class="num">REB</th><th class="num">DEF</th>${th("Asking", "fa", "ask")}<th></th></tr></thead>
-          <tbody>${fas.slice(0, 120).map((p) => {
-            const ask = p.ask || { sal: S.econ.min, yrs: 1 };
-            const open = ui.offer === p.id;
-            return `<tr><td>${plink(p)}${p.real ? "" : ' <span class="chip">gen</span>'}</td><td class="num">${p.age}</td><td class="num">${ovr(p.r.ovr)}</td><td class="num">${rt(p.r.pot)}</td>
-              <td class="num">${rt(p.r.ins)}</td><td class="num">${rt(p.r.thr)}</td><td class="num">${rt(p.r.ply)}</td><td class="num">${rt(p.r.reb)}</td><td class="num">${rt(p.r.def)}</td>
-              <td class="num">${money(ask.sal)} × ${ask.yrs}</td>
-              <td>${open ? `<span class="row"><input type="number" id="offerSal" min="${S.econ.min / 1000}" max="${S.econ.max / 1000}" step="5" value="${Math.round(ask.sal / 1000)}" aria-label="Salary in thousands"> K
-                <select id="offerYrs" aria-label="Years">${[1, 2, 3, 4, 5].map((y) => `<option ${y === ask.yrs ? "selected" : ""}>${y}</option>`).join("")}</select>
-                <button class="btn small primary" data-act="offer" data-id="${p.id}">Offer</button><button class="btn small" data-act="cancel">Cancel</button></span>`
-                : `<button class="btn small" data-act="openOffer" data-id="${p.id}">Offer contract</button>`}</td></tr>`;
-          }).join("") || `<tr><td colspan="11" class="empty">No free agents right now.</td></tr>`}</tbody>
-        </table></div>
-      </section>`;
-  }
-
-  // ---------- draft ----------
-  function renderDraft() {
-    const S = GM.S, ut = S.userTeam;
-    const live = S.phase === "draft";
-    const slot = live && GM.draftOnClock();
-    const myTurn = slot && slot.owner === ut;
-    const pros = (live ? GM.availableProspects() : S.prospects.map(GM.P).filter((p) => p && p.prospect))
-      .sort((a, b) => (b.scout.ovr * 0.5 + b.scout.pot * 0.5) - (a.scout.ovr * 0.5 + a.scout.pot * 0.5));
-    const myPicks = S.picks.filter((pk) => pk.owner === ut && pk.season === S.season);
-    $("#view").innerHTML = `
-      <div class="grid2">
-        <section class="panel">
-          <div class="panel-head"><div><h2>${live ? `${S.season} draft room` : `${S.season} draft class`}</h2>
-            <div class="sub">${live ? (slot ? `Pick ${slot.pick} (round ${slot.round}) · on the clock: <b>${esc(GM.teamName(slot.owner))}</b>` : "Draft complete.") : `Scouting board. The draft opens after the playoffs. You own: ${myPicks.map((pk) => GM.pickLabel(pk)).join(", ") || "no picks this year"}.`}</div></div>
-            ${live && slot ? `<div class="row">${myTurn ? "" : `<button class="btn primary" data-act="draftToMe">Sim to my pick</button>`}<button class="btn" data-act="draftAuto">Auto-draft the rest</button></div>` : ""}</div>
-          ${myTurn ? `<div class="callout"><b>You're on the clock.</b> Pick a prospect below.</div>` : ""}
-          <div class="tablewrap"><table><thead><tr><th>#</th><th>Prospect</th><th class="num">Age</th><th>From</th><th class="num">Est. OVR</th><th class="num">Est. POT</th><th></th></tr></thead><tbody>
-            ${pros.map((p, i) => `<tr><td class="muted">${i + 1}</td><td>${plink(p)}</td><td class="num">${p.age}</td><td>${esc(p.school)}</td><td class="num">${ovr(p.scout.ovr)}</td><td class="num">${rt(p.scout.pot)}</td><td>${myTurn ? `<button class="btn small primary" data-act="draftPick" data-id="${p.id}">Draft</button>` : ""}</td></tr>`).join("") || `<tr><td colspan="7" class="empty">No prospects left.</td></tr>`}
-          </tbody></table></div>
-          <div class="sub">Prospects are generated players. Ratings shown are your scouts' estimates and can miss by several points.</div>
-        </section>
-        <section class="panel">
-          <h3>${live ? "Draft board" : `Real ${GM.data.baseSeason} draft`}</h3>
-          ${live ? `${S.draft.lottery ? `<div class="sub">Lottery winners: ${S.draft.lottery.map((id, i) => `#${i + 1} ${id}`).join(", ")}</div>` : ""}
-            <div class="tablewrap"><table><tbody>${S.draft.slots.map((s, i) => `<tr class="${s.owner === ut ? "me" : ""}"><td class="muted">${s.pick}</td><td>${badge(s.owner)}${s.orig !== s.owner ? ` <span class="muted">via ${s.orig}</span>` : ""}</td><td>${s.player ? plink(GM.P(s.player)) : i === S.draft.cur ? `<span class="chip accent">On the clock</span>` : ""}</td></tr>`).join("")}</tbody></table></div>`
-          : `<div class="tablewrap"><table><tbody>${GM.data.draft.slice(0, 15).map((d) => `<tr><td class="muted">${d.pick}</td><td>${badge(d.team)}</td><td>${esc(d.name)}</td><td class="muted">${esc(d.school)}</td></tr>`).join("")}</tbody></table></div>`}
-        </section>
-      </div>`;
-  }
-
-  // ---------- standings / schedule / leaders / players / history ----------
-  function renderStandings() {
-    const S = GM.S, st = GM.standings(), lead = st[0];
-    const r = GM.powerRanks();
-    $("#view").innerHTML = `
-      ${S.playoffs ? `<section class="panel"><h3>${S.season} playoffs</h3>${bracket()}</section>` : ""}
-      <section class="panel"><div class="panel-head"><h2>Standings ${S.season}</h2><span class="sub">Top 8 overall make the playoffs. Dashed line marks the cut.</span></div>
-      <div class="tablewrap"><table><thead><tr><th>#</th><th>Team</th><th class="num">W</th><th class="num">L</th><th class="num">PCT</th><th class="num">GB</th><th class="num">Home</th><th class="num">Away</th><th class="num">PF</th><th class="num">PA</th><th class="num">Diff</th><th class="num">Streak</th><th class="num">Rating</th><th class="num">Power</th></tr></thead><tbody>
-      ${st.map((t, i) => { const gp = t.w + t.l; const gb = ((lead.w - t.w) + (t.l - lead.l)) / 2;
-        return `<tr class="${t.id === S.userTeam ? "me" : ""}${i === 7 ? " cutline" : ""}"><td class="muted">${i + 1}</td><td>${badge(t.id)} ${esc(t.city)} ${esc(t.name)}</td><td class="num">${t.w}</td><td class="num">${t.l}</td><td class="num">${gp ? (t.w / gp).toFixed(3).replace(/^0/, "") : "–"}</td><td class="num">${gb ? gb.toFixed(1) : "–"}</td><td class="num">${t.hw}-${t.hl}</td><td class="num">${t.w - t.hw}-${t.l - t.hl}</td><td class="num">${gp ? f1(t.pf / gp) : "–"}</td><td class="num">${gp ? f1(t.pa / gp) : "–"}</td><td class="num">${gp ? f1((t.pf - t.pa) / gp) : "–"}</td><td class="num">${t.streak ? (t.streak > 0 ? "W" + t.streak : "L" + -t.streak) : "–"}</td><td class="num">${GM.teamRating(t.id).toFixed(1)}</td><td class="num">${r[t.id]}</td></tr>`; }).join("")}
-      </tbody></table></div></section>`;
-  }
-  function renderSchedule() {
-    const S = GM.S, ut = S.userTeam;
-    const mine = S.schedule.filter((g) => g.home === ut || g.away === ut);
-    const lastPlayed = Math.max(0, ...S.schedule.filter((g) => g.played).map((g) => g.day));
-    const today = S.schedule.filter((g) => g.day === lastPlayed && g.played);
-    const myPO = S.playoffs ? S.playoffs.rounds.flat().filter((s) => s.hi === ut || s.lo === ut) : [];
-    $("#view").innerHTML = `<div class="grid2">
-      <section class="panel"><h2>${esc(GM.T(ut).name)} schedule</h2><div class="tablewrap"><table><tbody>${mine.map(gameRow).join("")}</tbody></table></div></section>
-      <div style="display:grid;gap:18px">
-        ${myPO.length ? `<section class="panel"><h3>Your playoff games</h3><table><tbody>${myPO.flatMap((s) => s.games).map((g) => { const home = g.home === ut; const us = home ? g.hs : g.as, them = home ? g.as : g.hs; const opp = home ? g.away : g.home; return `<tr><td>${home ? "vs" : "@"} ${badge(opp)}</td><td class="num"><span class="${us > them ? "w" : "l"}">${us > them ? "W" : "L"}</span> ${us}-${them} <button class="btn small" data-act="box" data-gid="${g.gid}">Box</button></td></tr>`; }).join("")}</tbody></table></section>` : ""}
-        <section class="panel"><h3>${lastPlayed ? `Around the league · day ${lastPlayed}` : "Around the league"}</h3>${today.length ? `<table><tbody>${today.map((g) => `<tr><td>${badge(g.away)} ${g.as}</td><td>@ ${badge(g.home)} ${g.hs}${g.ot ? " OT" : ""}</td><td class="num"><button class="btn small" data-act="box" data-gid="${g.gid}">Box</button></td></tr>`).join("")}</tbody></table>` : `<div class="empty">No games played yet.</div>`}</section>
-      </div></div>`;
-  }
-  function renderLeaders() {
-    const S = GM.S;
-    const cats = [["pts", "Points"], ["reb", "Rebounds"], ["ast", "Assists"], ["stl", "Steals"], ["blk", "Blocks"], ["fg", "FG%"], ["tp", "3P%"], ["ts", "True shooting"]];
-    const rows = Object.values(S.players).map((p) => [p, GM.perGame(p)]).filter(([p, s]) => s && s.gp >= Math.max(1, Math.floor(gamesPlayed() * 0.5)));
-    const c = ui.leaders;
-    const qual = ["fg", "tp", "ts"].includes(c) ? rows.filter(([p, s]) => c === "tp" ? (p.stats[S.season].tpa >= s.gp * 1.5) : (p.stats[S.season].fga >= s.gp * 6)) : rows;
-    qual.sort((a, b) => b[1][c] - a[1][c]);
-    $("#view").innerHTML = `<section class="panel"><div class="panel-head"><h2>League leaders ${S.season}</h2>
-      <div class="row">${cats.map(([k, l]) => `<button class="btn small ${k === c ? "primary" : ""}" data-act="leaders" data-c="${k}">${l}</button>`).join("")}</div></div>
-      ${qual.length ? `<div class="tablewrap"><table><thead><tr><th>#</th><th>Player</th><th>Team</th><th class="num">GP</th><th class="num">MIN</th><th class="num">PTS</th><th class="num">REB</th><th class="num">AST</th><th class="num">STL</th><th class="num">BLK</th><th class="num">FG%</th><th class="num">3P%</th><th class="num">TS%</th></tr></thead><tbody>
-      ${qual.slice(0, 30).map(([p, s], i) => `<tr class="${s.team === S.userTeam ? "me" : ""}"><td class="muted">${i + 1}</td><td>${plink(p)}</td><td>${badge(s.team)}</td><td class="num">${s.gp}</td><td class="num">${s.min}</td><td class="num">${s.pts}</td><td class="num">${s.reb}</td><td class="num">${s.ast}</td><td class="num">${s.stl}</td><td class="num">${s.blk}</td><td class="num">${pct(s.fg)}</td><td class="num">${pct(s.tp)}</td><td class="num">${pct(s.ts)}</td></tr>`).join("")}</tbody></table></div>`
-      : `<div class="empty">Leaders appear once games are played. Last season's real numbers are on each player's card.</div>`}</section>`;
-  }
-  const gamesPlayed = () => Math.max(0, ...GM.S.teams.map((t) => t.w + t.l));
+  // ---------- players ----------
   function renderPlayers() {
     const S = GM.S, f = ui.players;
     let ps = Object.values(S.players).filter((p) => !p.retired && !p.prospect);
     if (f.team === "FA") ps = ps.filter((p) => !p.team); else if (f.team !== "all") ps = ps.filter((p) => p.team === f.team);
     if (f.q) { const q = f.q.toLowerCase(); ps = ps.filter((p) => p.name.toLowerCase().includes(q)); }
-    sortRows(ps, "players", { col: "ovr", dir: -1, get: (p) => p.r.ovr });
+    sortRows(ps, "players", { col: "ovr", dir: -1, get: getters.ovr });
     $("#view").innerHTML = `<section class="panel"><div class="panel-head"><h2>Players</h2>
       <div class="row"><input type="search" id="pq" placeholder="Search by name" value="${esc(f.q)}" aria-label="Search players">
-      <select id="pteam" aria-label="Team filter"><option value="all">All teams</option><option value="FA" ${f.team === "FA" ? "selected" : ""}>Free agents</option>${S.teams.map((t) => `<option value="${t.id}" ${f.team === t.id ? "selected" : ""}>${esc(t.city)} ${esc(t.name)}</option>`).join("")}</select></div></div>
-      <div class="tablewrap"><table><thead><tr><th>Player</th><th>Team</th>${th("Age", "players", "age")}${th("OVR", "players", "ovr")}${th("POT", "players", "pot")}${th("INS", "players", "ins")}${th("3PT", "players", "thr")}${th("PLY", "players", "ply")}${th("REB", "players", "reb")}${th("DEF", "players", "def")}${th("Salary", "players", "sal")}<th class="num">Yrs</th><th class="num">PTS</th></tr></thead><tbody>
-      ${ps.slice(0, 200).map((p) => { const s = GM.perGame(p); const h = p.hist && p.hist[GM.data.baseSeason]; return `<tr class="${p.team === S.userTeam ? "me" : ""}"><td>${plink(p)}</td><td>${badge(p.team)}</td><td class="num">${p.age}</td><td class="num">${ovr(p.r.ovr)}</td><td class="num">${rt(p.r.pot)}</td><td class="num">${rt(p.r.ins)}</td><td class="num">${rt(p.r.thr)}</td><td class="num">${rt(p.r.ply)}</td><td class="num">${rt(p.r.reb)}</td><td class="num">${rt(p.r.def)}</td><td class="num">${p.team ? money(p.c.sal) : "–"}</td><td class="num">${p.team ? p.c.yrs : "–"}</td><td class="num">${s ? s.pts : h && h.gp ? `<span class="muted">${f1(h.pts)}</span>` : "–"}</td></tr>`; }).join("")}
-      </tbody></table></div><div class="sub">Grey points are from the real ${GM.data.baseSeason} season.</div></section>`;
+      <select id="pteam" aria-label="Team filter"><option value="all">All teams</option><option value="FA" ${f.team === "FA" ? "selected" : ""}>Free agents</option>${GM.activeTeams().map((t) => `<option value="${t.fid}" ${f.team === t.fid ? "selected" : ""}>${esc(t.city)} ${esc(t.name)}</option>`).join("")}</select></div></div>
+      <div class="tablewrap"><table><thead><tr><th>Player</th><th>Team</th>${th("Age", "players", "age")}${th("OVR", "players", "ovr")}${th("POT", "players", "pot")}${th("INS", "players", "ins")}${th("3PT", "players", "thr")}${th("PLY", "players", "ply")}${th("REB", "players", "reb")}${th("DEF", "players", "def")}${th("Salary", "players", "sal")}<th class="num">PTS</th></tr></thead><tbody>
+      ${ps.slice(0, 200).map((p) => { const s = GM.perGame(p); return `<tr><td>${plink(p)}${p.real ? "" : ' <span class="chip">gen</span>'}</td><td>${badge(p.team)}</td><td class="num">${GM.age(p)}</td><td class="num">${ovr(p.r.ovr)}</td><td class="num">${rt(p.r.pot)}</td><td class="num">${rt(p.r.ins)}</td><td class="num">${rt(p.r.thr)}</td><td class="num">${rt(p.r.ply)}</td><td class="num">${rt(p.r.reb)}</td><td class="num">${rt(p.r.def)}</td><td class="num">${p.team ? money(p.c.sal) : "–"}</td><td class="num">${s ? s.pts : "–"}</td></tr>`; }).join("")}
+      </tbody></table></div><div class="sub">Showing ${Math.min(200, ps.length)} of ${ps.length}. "gen" marks generated players.</div></section>`;
+  }
+  function playerModal(id) {
+    const S = GM.S, p = GM.P(id); if (!p) return "";
+    const t = GM.T(p.team);
+    const bars = [["OVR", p.r.ovr], ["POT", p.r.pot], ["INS", p.r.ins], ["3PT", p.r.thr], ["FT", p.r.fts], ["PLY", p.r.ply], ["REB", p.r.reb], ["DEF", p.r.def], ["ATH", p.r.ath]];
+    const rows = [];
+    for (const y of GM.realSeasons(p.id).filter((y) => y < S.startYear).sort((a, b) => a - b)) {
+      const l = GM.realLine(p.id, y);
+      rows.push({ season: y, team: GM.fidAbbr(l[F.fid], y), gp: l[F.gp], min: l[F.min], pts: l[F.pts], reb: l[F.reb], ast: l[F.ast], stl: l[F.stl], blk: l[F.blk], fg: l[F.fg], tp: l[F.tp], ft: l[F.ft], tag: "real" });
+    }
+    for (const c of p.career) rows.push({ ...c, team: GM.T(c.team)?.abbr || c.team });
+    const s = GM.perGame(p); if (s && S.phase !== "offseason") rows.push({ season: S.season, ...s, team: GM.T(s.team)?.abbr, tag: "now" });
+    const realAll = GM.realSeasons(p.id).filter((y) => y >= S.startYear).sort((a, b) => a - b);
+    return `<div class="modal-bg" data-act="closeModal"><div class="modal" style="--tc:${t ? t.color : "var(--tier-4)"}" role="dialog" aria-modal="true" aria-label="${esc(p.name)}" data-stop>
+      <div class="modal-head"><div class="row">${badge(p.team, true)}<div><h2>${esc(p.name)}</h2><div class="sub">${esc(p.pos)} · ${ht(p.ht)} · age ${GM.age(p)}${p.school ? ` · ${esc(p.school)}` : ""}${p.draft && p.draft.season ? ` · ${p.draft.real ? "real " : ""}${p.draft.season} draft${p.draft.pick ? `, #${p.draft.pick}` : ""}` : ""}</div></div></div><button class="btn" data-act="closeModal">Close</button></div>
+      <div class="row">${t ? `<span class="chip">${esc(t.city)} ${esc(t.name)}</span><span class="chip">${money(p.c.sal)} × ${p.c.yrs}</span>` : p.retired ? `<span class="chip">Retired ${p.retired}</span>` : `<span class="chip warn">Free agent</span>`}${p.inj ? `<span class="chip bad">${esc(p.injType)}</span>` : ""}${p.real ? "" : `<span class="chip">Generated player</span>`}${p.awards.map((a) => `<span class="chip accent">${esc(a)}</span>`).join("")}</div>
+      <div class="bars">${bars.map(([l, v]) => `<div class="bar"><span class="eyebrow">${l}</span><div class="track"><div class="fill" style="width:${v}%"></div></div><b>${v}</b></div>`).join("")}</div>
+      ${rows.length ? `<div class="tablewrap" style="max-height:320px;overflow-y:auto"><table><thead><tr><th>Season</th><th>Team</th><th class="num">GP</th><th class="num">MIN</th><th class="num">PTS</th><th class="num">REB</th><th class="num">AST</th><th class="num">STL</th><th class="num">BLK</th><th class="num">FG%</th><th class="num">3P%</th><th class="num">FT%</th></tr></thead><tbody>
+        ${rows.map((c) => `<tr><td>${c.season}${c.tag === "real" ? ' <span class="chip">real</span>' : c.tag === "now" ? ' <span class="chip accent">now</span>' : ""}</td><td>${esc(c.team)}</td><td class="num">${c.gp}</td><td class="num">${f1(c.min)}</td><td class="num">${f1(c.pts)}</td><td class="num">${f1(c.reb)}</td><td class="num">${f1(c.ast)}</td><td class="num">${f1(c.stl)}</td><td class="num">${f1(c.blk)}</td><td class="num">${pct(c.fg)}</td><td class="num">${pct(c.tp)}</td><td class="num">${pct(c.ft)}</td></tr>`).join("")}
+      </tbody></table></div>` : `<div class="empty">No games played yet.</div>`}
+      ${realAll.length ? `<details><summary class="eyebrow" style="cursor:pointer">What really happened (${realAll[0]}–${realAll.at(-1)})</summary><div class="tablewrap"><table><tbody>${realAll.map((y) => { const l = GM.realLine(p.id, y); return `<tr><td>${y}</td><td>${esc(GM.fidAbbr(l[F.fid], y))}</td><td class="num">${l[F.gp]} gp</td><td class="num">${f1(l[F.pts])} pts</td><td class="num">${f1(l[F.reb])} reb</td><td class="num">${f1(l[F.ast])} ast</td><td class="num">rating ${l[F.ovr]}</td></tr>`; }).join("")}</tbody></table></div></details>` : ""}
+    </div></div>`;
+  }
+
+  // ---------- leaders / draft / moves / history ----------
+  function renderLeaders() {
+    const S = GM.S;
+    const cats = [["pts", "Points"], ["reb", "Rebounds"], ["ast", "Assists"], ["stl", "Steals"], ["blk", "Blocks"], ["fg", "FG%"], ["tp", "3P%"], ["ts", "True shooting"]];
+    const gp = Math.max(0, ...GM.activeTeams().map((t) => t.w + t.l));
+    const rows = Object.values(S.players).map((p) => [p, GM.perGame(p)]).filter(([, s]) => s && s.gp >= Math.max(1, Math.floor(gp * 0.5)));
+    const c = ui.leaders;
+    const q = ["fg", "tp", "ts"].includes(c) ? rows.filter(([p, s]) => (c === "tp" ? p.stats[S.season].tpa >= s.gp * 1.2 : p.stats[S.season].fga >= s.gp * 6)) : rows;
+    q.sort((a, b) => b[1][c] - a[1][c]);
+    $("#view").innerHTML = `<section class="panel"><div class="panel-head"><h2>Leaders ${S.season}</h2><div class="row">${cats.map(([k, l]) => `<button class="btn small ${k === c ? "primary" : ""}" data-act="leaders" data-c="${k}">${l}</button>`).join("")}</div></div>
+      ${q.length ? `<div class="tablewrap"><table><thead><tr><th>#</th><th>Player</th><th>Team</th><th class="num">GP</th><th class="num">MIN</th><th class="num">PTS</th><th class="num">REB</th><th class="num">AST</th><th class="num">STL</th><th class="num">BLK</th><th class="num">FG%</th><th class="num">3P%</th><th class="num">TS%</th></tr></thead><tbody>
+      ${q.slice(0, 30).map(([p, s], i) => `<tr><td class="muted">${i + 1}</td><td>${plink(p)}</td><td>${badge(s.team)}</td><td class="num">${s.gp}</td><td class="num">${s.min}</td><td class="num">${s.pts}</td><td class="num">${s.reb}</td><td class="num">${s.ast}</td><td class="num">${s.stl}</td><td class="num">${s.blk}</td><td class="num">${pct(s.fg)}</td><td class="num">${pct(s.tp)}</td><td class="num">${pct(s.ts)}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">Leaders appear once games are played.</div>`}</section>`;
+  }
+  function renderDraft() {
+    const S = GM.S, d = S.lastDraft;
+    const y = S.season + 1;
+    const upcoming = y <= D.last ? D.players.filter((p) => p.s[y] && Math.min(...Object.keys(p.s).map(Number)) === y && p.dy && p.dy >= y - 2 && !S.players[p.id]).sort((a, b) => (a.dn || 99) - (b.dn || 99)) : [];
+    $("#view").innerHTML = `<div class="grid2">
+      <section class="panel"><h2>${d ? `${d.season} draft` : "Draft"}</h2>
+        ${d ? `<div class="tablewrap"><table><thead><tr><th>Pick</th><th>Team</th><th>Player</th><th>From</th><th class="num">OVR</th><th class="num">POT</th></tr></thead><tbody>${d.picks.map((x) => { const p = GM.P(x.pid); return p ? `<tr><td class="muted">${x.pick}${x.round > 1 ? ` <span class="pos">R${x.round}</span>` : ""}</td><td>${badge(x.fid)}</td><td>${plink(p)}${p.real ? "" : ' <span class="chip">gen</span>'}</td><td class="muted">${esc(p.school)}</td><td class="num">${ovr(p.r.ovr)}</td><td class="num">${rt(p.r.pot)}</td></tr>` : ""; }).join("")}</tbody></table></div>` : `<div class="empty">The first draft runs when you finish the ${S.season} offseason.</div>`}
+      </section>
+      <section class="panel"><h3>${y} class: real players</h3>
+        ${upcoming.length ? `<div class="sub">These players were in the real ${y} draft. In your league they're drafted in the order your standings and lottery produce.</div><div class="tablewrap"><table><tbody>${upcoming.slice(0, 40).map((p) => `<tr><td class="muted">${p.dn ? `real #${p.dn}` : ""}</td><td>${esc(p.n)}</td><td class="muted">${esc(p.col && p.col !== "None" ? p.col : p.ctry)}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">${y > D.last ? "From here on, draft classes are generated." : "No real draftees found for this year."}</div>`}
+      </section></div>`;
+  }
+  function renderMoves() {
+    const S = GM.S;
+    const list = S.transactions.filter((x) => ui.txTeam === "all" || x.team === ui.txTeam).slice(0, 200);
+    $("#view").innerHTML = `<section class="panel"><div class="panel-head"><h2>Transactions</h2><select id="txTeam" aria-label="Team filter"><option value="all">All teams</option>${S.teams.map((t) => `<option value="${t.fid}" ${ui.txTeam === t.fid ? "selected" : ""}>${esc(t.city)} ${esc(t.name)}</option>`).join("")}</select></div>
+      <div class="news" style="max-height:none">${list.map((x) => `<div><span class="when">${x.season} ${(phaseLabel[x.phase] || "").slice(0, 3).toUpperCase()}</span>${esc(x.text)}</div>`).join("") || `<div class="empty">No transactions yet.</div>`}</div></section>`;
   }
   function renderHistory() {
     const S = GM.S;
     const nm = (id) => (id && GM.P(id) ? plink(GM.P(id)) : "–");
+    const titles = S.teams.filter((t) => t.titles).sort((a, b) => b.titles - a.titles);
     $("#view").innerHTML = `<section class="panel"><h2>League history</h2>
-      ${S.history.length ? `<div class="tablewrap"><table><thead><tr><th>Season</th><th>Champion</th><th>Runner-up</th><th>Finals MVP</th><th>MVP</th><th>DPOY</th><th>ROY</th><th>Your team</th></tr></thead><tbody>
-      ${S.history.map((h) => `<tr><td>${h.season}</td><td>${badge(h.champion)} ${esc(GM.T(h.champion).name)}</td><td>${badge(h.runnerUp)}</td><td>${nm(h.finalsMvp)}</td><td>${nm(h.mvp)}</td><td>${nm(h.dpoy)}</td><td>${nm(h.roy)}</td><td>${h.userRecord.w}-${h.userRecord.l}${h.userRecord.seed ? ` · #${h.userRecord.seed} seed` : " · missed playoffs"}${h.champion === S.userTeam ? ' <span class="chip accent">Champions</span>' : ""}</td></tr>`).join("")}
-      </tbody></table></div>` : `<div class="empty">Finish a season to start the record book. The real ${GM.data.baseSeason} standings are the starting point: ${GM.data.teams.slice(0, 3).map((t) => `${esc(t.name)} ${t.last.w}-${t.last.l}`).join(", ")}…</div>`}</section>`;
+      ${S.history.length ? `<div class="tablewrap"><table><thead><tr><th>Season</th><th>Champion</th><th>Runner-up</th><th>Finals MVP</th><th>MVP</th><th>DPOY</th><th>ROY</th><th>Best record</th><th>Real life best record</th></tr></thead><tbody>
+      ${S.history.map((h) => `<tr><td>${h.season}</td><td>${badge(h.champion)} ${esc(h.champName)}</td><td class="muted">${esc(h.runnerName)}</td><td>${nm(h.finalsMvp)}</td><td>${nm(h.mvp)}</td><td>${nm(h.dpoy)}</td><td>${nm(h.roy)}</td><td>${badge(h.best)} ${esc(h.bestRec)}</td><td class="muted">${h.real ? `${esc(h.real.team)} ${esc(h.real.rec)}` : "–"}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">Finish a season to start the record book.</div>`}</section>
+      ${titles.length ? `<section class="panel"><h3>Titles by franchise</h3><div class="tablewrap"><table><tbody>${titles.map((t) => `<tr><td>${badge(t.fid)} ${esc(t.city)} ${esc(t.name)}${t.active ? "" : ' <span class="chip">defunct</span>'}</td><td class="num"><b>${t.titles}</b></td></tr>`).join("")}</tbody></table></div></section>` : ""}`;
+  }
+
+  // ---------- league office ----------
+  function renderLeague() {
+    const S = GM.S, open = GM.officeOpen();
+    const r = S.rulesNext || S.rules;
+    const n = GM.activeTeams().length;
+    const bo = (id, v) => `<select id="${id}">${[1, 3, 5, 7].map((x) => `<option ${x === v ? "selected" : ""}>${x}</option>`).join("")}</select>`;
+    const num = (id, v, label, attrs = "") => `<label class="field"><span class="eyebrow">${label}</span><input type="number" id="${id}" value="${v}" ${attrs}></label>`;
+    $("#view").innerHTML = `
+      <section class="callout"><h3>League office · ${open ? "open" : "season in progress"}</h3>
+        <div class="sub">${open ? "Changes take effect immediately." : "Rule changes made now are queued for next season. Franchise and conference changes open in the preseason and offseason."}${S.rulesNext ? " The form shows your queued changes." : ""}</div></section>
+      <div class="grid2">
+        <section class="panel"><h3>Playoff format</h3>
+          <div class="formgrid">
+            ${num("rPlayoffTeams", r.playoffTeams, `Playoff teams (of ${n})`, `min="2" max="${n}"`)}
+            <label class="field"><span class="eyebrow">Seeding</span><select id="rSeeding"><option value="overall" ${r.seeding === "overall" ? "selected" : ""}>League-wide</option><option value="conference" ${r.seeding === "conference" ? "selected" : ""}>By conference</option></select></label>
+            <label class="field"><span class="eyebrow">Early rounds, best of</span>${bo("rEarly", r.earlyBo)}</label>
+            <label class="field"><span class="eyebrow">Semifinals, best of</span>${bo("rSemis", r.semisBo)}</label>
+            <label class="field"><span class="eyebrow">Finals, best of</span>${bo("rFinals", r.finalsBo)}</label>
+          </div>
+          <div class="sub">If the field doesn't fill a full bracket, the top seeds get byes. With conference seeding, each conference sends ${Math.round(r.playoffTeams / Math.max(1, GM.activeConfs().length))} teams and the conference champions meet in the Finals.</div>
+          <h3>Season, money and the draft</h3>
+          <div class="formgrid">
+            ${num("rGames", r.games, "Games per team", 'min="4" max="100"')}
+            ${num("rCap", Math.round(r.cap / 1000), "Salary cap ($K)", 'min="100" step="50"')}
+            ${num("rGrowth", Math.round(r.capGrowth * 100), "Cap growth per year (%)", 'min="0" max="30"')}
+            ${num("rMaxPct", Math.round(r.maxPct * 100), "Max salary (% of cap)", 'min="5" max="50"')}
+            ${num("rRosterMin", r.rosterMin, "Roster minimum", 'min="8" max="20"')}
+            ${num("rRosterMax", r.rosterMax, "Roster maximum", 'min="8" max="20"')}
+            ${num("rRounds", r.draftRounds, "Draft rounds", 'min="0" max="6"')}
+            ${num("rLotTeams", r.lotteryTeams, "Teams in the lottery", `min="0" max="${n}"`)}
+            ${num("rLotPicks", r.lotteryPicks, "Picks decided by lottery", `min="0" max="${n}"`)}
+            ${num("rProtect", r.expansionProtect, "Expansion draft: protected per team", 'min="0" max="15"')}
+            ${num("rDeadline", Math.round(r.tradeDeadline * 100), "Trade deadline (% of season)", 'min="0" max="100"')}
+          </div>
+          <div class="row"><button class="btn primary" data-act="saveRules">${open ? "Apply rules" : "Queue for next season"}</button></div>
+        </section>
+        <div style="display:grid;gap:18px;min-width:0">
+          <section class="panel"><h3>Conferences</h3>
+            ${S.conferences.map((c, i) => `<div class="row"><b style="min-width:7ch">${esc(c)}</b><span class="muted">${GM.activeTeams().filter((t) => t.conf === c).length} teams</span><span class="spacer"></span>${open ? `<input type="text" id="cn-${i}" placeholder="New name" size="10" aria-label="Rename ${esc(c)}"><button class="btn small" data-act="renameConf" data-i="${i}">Rename</button><button class="btn small danger" data-act="removeConf" data-i="${i}">Dissolve</button>` : ""}</div>`).join("")}
+            ${open ? `<div class="row"><input type="text" id="newConf" placeholder="Conference name" aria-label="New conference name"><button class="btn" data-act="addConf">Add conference</button></div>
+            <div class="tablewrap"><table><tbody>${GM.activeTeams().map((t) => `<tr><td>${badge(t.fid)} ${esc(t.city)} ${esc(t.name)}</td><td><select data-act="teamConf" data-id="${t.fid}" aria-label="Conference for ${esc(t.name)}">${S.conferences.map((c) => `<option ${c === t.conf ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></td></tr>`).join("")}</tbody></table></div>` : ""}
+          </section>
+          <section class="panel"><h3>Expansion</h3>
+            ${open ? `<div class="sub">The new team gets an expansion draft (every other team protects ${r.expansionProtect} players), the first pick in each round of its first draft, and a shot at free agents.</div>
+            <div class="formgrid">
+              <label class="field"><span class="eyebrow">City</span><input type="text" id="xCity" placeholder="Nashville"></label>
+              <label class="field"><span class="eyebrow">Nickname</span><input type="text" id="xName" placeholder="Notes"></label>
+              <label class="field"><span class="eyebrow">Abbreviation</span><input type="text" id="xAbbr" maxlength="3" placeholder="NSH"></label>
+              <label class="field"><span class="eyebrow">Color</span><input type="color" id="xColor" value="#2f6f8f"></label>
+              <label class="field"><span class="eyebrow">Conference</span><select id="xConf">${S.conferences.map((c) => `<option>${esc(c)}</option>`).join("")}</select></label>
+            </div><div class="row"><button class="btn primary" data-act="expand">Add the team</button></div>` : `<div class="empty">Opens in the preseason and offseason.</div>`}
+            <div class="sub">To relocate, rename or fold a team, open it from the Teams tab.</div>
+          </section>
+          <section class="panel"><h3>Real league history</h3>
+            <label class="row" style="flex-wrap:nowrap;align-items:flex-start"><input type="checkbox" id="optHistory" ${S.opts.followHistory ? "checked" : ""}> Bring real franchise moves (expansions, relocations, folds, schedule changes) to me for approval</label>
+            <label class="row" style="flex-wrap:nowrap;align-items:flex-start"><input type="checkbox" id="optCareers" ${S.opts.realCareers ? "checked" : ""}> Real players follow their real career arcs</label>
+            ${GM.pendingEvents().length ? GM.pendingEvents().map(eventRow).join("") : `<div class="sub">Nothing pending right now. Real moves for next season appear here during the offseason.</div>`}
+          </section>
+        </div>
+      </div>`;
   }
 
   function renderSettings() {
     const S = GM.S;
     $("#view").innerHTML = `<div class="grid2">
-      <section class="panel"><h2>Save game</h2>
-        <div class="prose"><p>Your league saves automatically in this browser after every action. To move it to another device or keep a backup, copy the save code or download it, then import it later.</p></div>
+      <section class="panel"><h2>Save</h2>
+        <div class="prose"><p>The league saves in this browser after every step. To move it to another device or keep a backup, copy the save code${window.top === window ? " or download it" : ""}, then import it later.</p></div>
+        ${GM.saveError ? `<div class="chip bad">${esc(GM.saveError)}</div>` : ""}
         <div class="row"><button class="btn" data-act="copySave">Copy save code</button>${window.top === window ? `<button class="btn" data-act="downloadSave">Download save file</button>` : ""}</div>
         <label class="sub" for="importText">Import: paste a save code here, or choose a file</label>
         <textarea id="importText" placeholder="Paste save code"></textarea>
         <div class="row"><button class="btn" data-act="importText">Load pasted save</button><input type="file" id="importFile" accept=".json,application/json" aria-label="Import save file"></div>
-        <hr style="border:0;border-top:1px solid var(--line);width:100%">
-        <div class="row">${ui.confirm === "new" ? `<span>This replaces your current league.</span><button class="btn danger" data-act="newGame">Start over</button><button class="btn" data-act="cancel">Keep playing</button>` : `<button class="btn danger" data-act="askNew">New game</button>`}</div>
+        <div class="row">${ui.confirm === "new" ? `<span>This replaces your current league.</span><button class="btn danger" data-act="newGame">Start over</button><button class="btn" data-act="cancel">Keep going</button>` : `<button class="btn danger" data-act="askNew">New league</button>`}</div>
       </section>
       <section class="panel"><h2>How it works</h2><div class="prose">
-        <p><b>Data.</b> Rosters, stats and impact metrics come from <a href="https://github.com/sportsdataverse/wehoop-wnba-stats-data" target="_blank" rel="noopener">sportsdataverse/wehoop-wnba-stats-data</a> (CC BY 4.0), using the ${GM.data.baseSeason} regular season.</p>
-        <p><b>Ratings use each player's whole WNBA career</b> (1997 to ${GM.data.baseSeason}). Every season is scored against that year's league, so different eras compare fairly. Seasons are then averaged by minutes played, with each year back counting ${Math.round((GM.data.ratingMethod?.careerDecay ?? 1) * 100)}% as much as the one after it, so recent form still matters most. OVR blends career Game Score per 36, PIE and minutes per game with ${GM.data.baseSeason} Box Plus/Minus and adjusted RAPM, shrinks low-minute players toward replacement level, and scales the league average to about 58. Skill ratings use career per-36 rates and shooting percentages.</p>
-        <p><b>Games.</b> Each team's strength is the minutes-weighted OVR of its rotation. Strength gaps convert to point margins at ${S.sim.marginPerRating} points per rating point, fitted to the real ${GM.data.baseSeason} point differentials, plus ${S.sim.homeAdv} points of home court and game-to-game randomness.</p>
-        <p><b>Money.</b> The data has no salaries, so contracts are estimates scaled to the 2026 CBA: a hard cap of ${money(S.econ.cap)} this season, max ${money(S.econ.max)}, minimum ${money(S.econ.min)}, growing about ${Math.round(S.econ.growth * 100)}% a year.</p>
-        <p><b>Draft classes and filler free agents</b> are generated with invented names; everyone else is a real player.</p>
-        <p class="muted">Courtside GM is a fan-made simulator and is not affiliated with or endorsed by the WNBA, its teams or its players.</p>
+        <p><b>Data.</b> Every season from ${D.first} to ${D.last} comes from <a href="https://github.com/sportsdataverse/wehoop-wnba-stats-data" target="_blank" rel="noopener">sportsdataverse/wehoop-wnba-stats-data</a> (CC BY 4.0): teams, conferences, records, player bios and season stats.</p>
+        <p><b>Ratings.</b> A player's rating for a season uses her whole career up to that point. Each season is graded against that year's league, then averaged by minutes, with each year back counting ${Math.round(D.decay * 100)}% as much as the one after it.</p>
+        <p><b>Real careers.</b> With real career arcs on, each season a player's rating follows how she actually played that year. After ${D.last}, or in seasons she didn't play, the sim develops her normally. Real players enter the draft in their real draft years; generated prospects fill the remaining picks and every class after ${D.last}.</p>
+        <p><b>Teams.</b> The sim runs every front office: contenders trade youth for veterans, rebuilders do the reverse, and every team drafts, re-signs and signs free agents under your cap.</p>
+        <p><b>Money.</b> The data has no salaries. Caps before 2026 are rough estimates, and salaries scale with the cap you set.</p>
+        <p class="muted">Courtside is a fan-made simulator and is not affiliated with or endorsed by the WNBA, its teams or its players.</p>
       </div></section></div>`;
   }
 
-  // ---------- main render ----------
+  // ---------- render ----------
   function render() {
     renderTop();
-    if (!GM.S) { renderPicker(); renderModal(); return; }
-    const views = { dashboard: renderDashboard, roster: renderRoster, trade: renderTrade, fa: renderFA, draft: renderDraft, standings: renderStandings, schedule: renderSchedule, leaders: renderLeaders, players: renderPlayers, history: renderHistory, settings: renderSettings };
-    (views[ui.tab] || renderDashboard)();
-    renderModal();
+    if (!GM.S) { renderSetup(); $("#modal").innerHTML = ""; return; }
+    const views = { office: renderOffice, standings: renderStandings, playoffs: renderPlayoffs, teams: renderTeams, players: renderPlayers, leaders: renderLeaders, draft: renderDraft, moves: renderMoves, history: renderHistory, league: renderLeague, settings: renderSettings };
+    (views[ui.tab] || renderOffice)();
+    const m = ui.modal;
+    $("#modal").innerHTML = !m ? "" : m.type === "player" ? playerModal(m.id) : teamModal(m.id);
   }
-  function renderModal() {
-    const m = $("#modal");
-    if (!ui.modal || !GM.S) { m.innerHTML = ""; return; }
-    m.innerHTML = ui.modal.type === "player" ? playerModal(ui.modal.id) : boxModal(ui.modal.id);
-  }
+  const val = (id) => $("#" + id)?.value;
+  const numv = (id) => +val(id);
 
-  // ---------- actions ----------
-  function act(a, el, ev) {
-    const id = el.dataset.id ? +el.dataset.id : null;
-    const S = GM.S;
+  function act(a, el) {
+    const S = GM.S, id = el.dataset.id;
     switch (a) {
-      case "pickTeam": GM.newGame(el.dataset.id); ui.tab = "dashboard"; window.scrollTo(0, 0); break;
       case "tab": ui.tab = el.dataset.tab; ui.modal = null; ui.confirm = null; window.scrollTo(0, 0); break;
-      case "player": ui.modal = { type: "player", id }; break;
-      case "box": ui.modal = { type: "box", id: el.dataset.gid }; break;
-      case "closeModal": if (ev.target.closest("[data-stop]") && !el.matches("button")) return; ui.modal = null; break;
-      case "sort": {
-        const key = el.dataset.key, col = el.dataset.col, cur = ui.sort[key];
-        const getters = { age: (p) => p.age, ovr: (p) => p.r.ovr, pot: (p) => p.r.pot, ins: (p) => p.r.ins, thr: (p) => p.r.thr, ply: (p) => p.r.ply, reb: (p) => p.r.reb, def: (p) => p.r.def, sal: (p) => p.c.sal, ask: (p) => (p.ask ? p.ask.sal : 0) };
-        ui.sort[key] = { col, dir: cur && cur.col === col ? -cur.dir : -1, get: getters[col] };
-        break;
-      }
-      case "startSeason": { const r = GM.startSeason(); if (!r.ok) toast(r.msg, true); else toast(`The ${S.season} season has started.`); break; }
-      case "sim": { const before = S.phase; GM.simDays(+el.dataset.n); if (before === "regular" && GM.S.phase === "playoffs") { toast("Regular season complete. Playoffs are set."); ui.tab = "dashboard"; } break; }
-      case "poGame": GM.simPlayoffDay(); break;
-      case "poRound": GM.simPlayoffs(false); break;
-      case "poAll": GM.simPlayoffs(true); break;
-      case "toDraft": GM.advanceToDraft(); ui.tab = "draft"; break;
-      case "draftToMe": GM.draftUntilUser(false); break;
-      case "draftAuto": GM.draftUntilUser(true); if (GM.S.phase === "resign") { ui.tab = "dashboard"; toast("Draft complete. Decide on your expiring contracts."); } break;
-      case "draftPick": GM.userDraft(id); GM.draftUntilUser(false); if (GM.S.phase === "resign") { ui.tab = "dashboard"; toast("Draft complete. Decide on your expiring contracts."); } break;
-      case "resign": GM.resignPlayer(id); break;
-      case "letgo": GM.letGo(id); break;
-      case "toFA": GM.advanceToFreeAgency(); ui.tab = "fa"; toast("Free agency is open."); break;
-      case "faDay": GM.faDays(1); toast("A day passes. Other teams made their moves."); break;
-      case "nextSeason": { const r = GM.startNextSeason(); if (!r.ok) toast(r.msg, true); else { ui.tab = "dashboard"; toast(`Welcome to the ${GM.S.season} preseason.`); } break; }
-      case "rotUp": moveRot(id, -1); break;
-      case "rotDown": moveRot(id, 1); break;
-      case "autoRot": GM.T(S.userTeam).rotation = null; GM.save(); break;
-      case "askRelease": ui.confirm = "rel" + id; break;
-      case "release": ui.confirm = null; GM.releasePlayer(id); toast("Player released."); break;
-      case "cancel": ui.confirm = null; ui.offer = null; break;
-      case "openOffer": ui.offer = id; break;
-      case "offerFrom": ui.modal = null; ui.tab = "fa"; ui.offer = id; break;
-      case "offer": {
-        const sal = +$("#offerSal").value * 1000, yrs = +$("#offerYrs").value;
-        const r = GM.offerContract(id, sal, yrs); toast(r.msg, !r.ok); if (r.ok) ui.offer = null; break;
-      }
-      case "tradeFor": { const p = GM.P(id); resetTrade(p.team); ui.trade.get.add(id); ui.modal = null; ui.tab = "trade"; break; }
-      case "tsel": case "tpick": return; // handled on change
-      case "propose": {
-        const t = ui.trade;
-        const r = GM.proposeTrade(t.partner, [...t.give], [...t.get], [...t.givePicks], [...t.getPicks]);
-        if (r.ok) { toast("Trade accepted."); resetTrade(t.partner); t.msg = r.desc; }
-        else { t.msg = r.ev.issues[0] || "They turned it down. Add value or ask what would make it work."; toast(t.msg, true); }
-        break;
-      }
-      case "balance": {
-        const t = ui.trade;
-        const s = GM.suggestBalance(t.partner, [...t.give], [...t.get], [...t.givePicks], [...t.getPicks]);
-        if (s.type === "ok") t.msg = "They'd already accept this as is.";
-        else if (s.type === "add") {
-          s.pids.forEach((x) => t.give.add(x)); s.picks.forEach((k) => t.givePicks.add(k));
-          const names = [...s.pids.map((x) => GM.P(x).name), ...s.picks.map((k) => "your " + GM.pickLabel(GM.S.picks[k]))];
-          t.msg = `They'd do it if you add ${names.join(" and ")}. Added to your side.`;
-        }
-        else t.msg = "Nothing you could add makes this work. Ask for less.";
-        break;
-      }
-      case "clearTrade": resetTrade(ui.trade.partner); break;
+      case "newLeague": GM.newLeague(ui.setup.year, { realCareers: $("#optReal").checked, followHistory: $("#optHist").checked }); ui.tab = "office"; window.scrollTo(0, 0); toast(`Welcome, Commissioner. The ${ui.setup.year} season awaits.`); break;
+      case "player": ui.modal = { type: "player", id: +id }; break;
+      case "team": ui.modal = { type: "team", id }; ui.confirm = null; break;
+      case "closeModal": ui.modal = null; ui.confirm = null; break;
+      case "sort": { const k = el.dataset.key, c = el.dataset.col, cur = ui.sort[k]; ui.sort[k] = { col: c, dir: cur && cur.col === c ? -cur.dir : -1, get: getters[c] }; break; }
+      case "startSeason": { const r = GM.startSeason(); if (!r.ok) toast(r.msg || "Can't start yet.", true); break; }
+      case "sim": GM.simDays(+el.dataset.n); if (GM.S.phase === "playoffs") toast("Regular season complete. The playoffs are set."); break;
+      case "po": GM.simPlayoffs(el.dataset.mode); break;
+      case "toOffseason": GM.toOffseason(); ui.tab = "office"; break;
+      case "advance": { const r = GM.advanceToNextSeason(); if (r.ok) { ui.tab = "office"; toast(`${GM.S.season} preseason. The draft, free agency and player development are done.`); } break; }
+      case "event": GM.setEventApproval(id, el.dataset.ok === "1"); break;
+      case "saveRules":
+        GM.setRules({ playoffTeams: numv("rPlayoffTeams"), seeding: val("rSeeding"), earlyBo: numv("rEarly"), semisBo: numv("rSemis"), finalsBo: numv("rFinals"),
+          games: numv("rGames"), cap: numv("rCap") * 1000, capGrowth: numv("rGrowth") / 100, maxPct: numv("rMaxPct") / 100, rosterMin: numv("rRosterMin"), rosterMax: numv("rRosterMax"),
+          draftRounds: numv("rRounds"), lotteryTeams: numv("rLotTeams"), lotteryPicks: numv("rLotPicks"), expansionProtect: numv("rProtect"), tradeDeadline: numv("rDeadline") / 100 });
+        toast(GM.officeOpen() ? "Rules updated." : "Rules queued for next season."); break;
+      case "addConf": { const r = GM.addConference(val("newConf")); toast(r.ok ? "Conference added." : r.msg, !r.ok); break; }
+      case "renameConf": { const i = +el.dataset.i; const r = GM.renameConference(S.conferences[i], val("cn-" + i)); toast(r.ok ? "Conference renamed." : r.msg, !r.ok); break; }
+      case "removeConf": { const r = GM.removeConference(S.conferences[+el.dataset.i]); toast(r.ok ? "Conference dissolved; its teams moved to the smallest conference." : r.msg, !r.ok); break; }
+      case "expand": { const r = GM.expandTeam({ city: val("xCity").trim(), name: val("xName").trim(), abbr: val("xAbbr"), color: val("xColor"), conf: val("xConf") }); toast(r.ok ? "Expansion approved. The expansion draft is done." : r.msg, !r.ok); break; }
+      case "relocate": { const r = GM.relocateTeam(id, { city: val("relCity").trim(), name: val("relName").trim(), abbr: val("relAbbr"), color: val("relColor") }); toast(r.ok ? "Franchise updated." : r.msg, !r.ok); break; }
+      case "askFold": ui.confirm = "fold" + id; break;
+      case "fold": { const r = GM.foldTeam(id); ui.confirm = null; toast(r.ok ? "Franchise folded. The dispersal draft is done." : r.msg, !r.ok); break; }
+      case "cancel": ui.confirm = null; break;
       case "leaders": ui.leaders = el.dataset.c; break;
-      case "copySave": {
-        const txt = JSON.stringify(GM.S);
-        navigator.clipboard.writeText(txt).then(() => toast("Save code copied."), () => { $("#importText").value = txt; $("#importText").select(); toast("Copy blocked here: the code is in the box, selected. Copy it manually.", true); });
-        return;
-      }
-      case "downloadSave": {
-        try {
-          const blob = new Blob([JSON.stringify(GM.S)], { type: "application/json" });
-          const a2 = document.createElement("a"); a2.href = URL.createObjectURL(blob); a2.download = `wnba-gm-${GM.S.userTeam}-${GM.S.season}.json`; a2.click();
-          toast("If no download started, use Copy save code instead.");
-        } catch (e) { toast("Download isn't available here. Use Copy save code.", true); }
-        return;
-      }
-      case "importText": {
-        try { const obj = JSON.parse($("#importText").value); if (!obj.teams || !obj.players) throw 0; GM.importState(obj); ui.tab = "dashboard"; toast("Save loaded."); }
-        catch (e) { toast("That doesn't look like a save code. Paste the full text you copied.", true); return; }
-        break;
-      }
+      case "copySave": { const txt = JSON.stringify(S); navigator.clipboard.writeText(txt).then(() => toast("Save code copied."), () => { $("#importText").value = txt; $("#importText").select(); toast("Copy was blocked: the code is selected in the box. Copy it manually.", true); }); return; }
+      case "downloadSave": { const a2 = document.createElement("a"); a2.href = URL.createObjectURL(new Blob([JSON.stringify(S)], { type: "application/json" })); a2.download = `courtside-${S.startYear}-${S.season}.json`; a2.click(); return; }
+      case "importText": try { const o = JSON.parse(val("importText")); if (!o.teams || !o.players || !o.rules) throw 0; GM.importState(o); ui.tab = "office"; toast("League loaded."); } catch (e) { toast("That isn't a Courtside save code.", true); return; } break;
       case "askNew": ui.confirm = "new"; break;
-      case "newGame": ui.confirm = null; GM.clearSave(); ui.tab = "dashboard"; break;
+      case "newGame": ui.confirm = null; GM.clearSave(); break;
       default: return;
     }
     render();
   }
-  function resetTrade(partner) { ui.trade = { partner, give: new Set(), get: new Set(), givePicks: new Set(), getPicks: new Set(), msg: null }; }
-
   document.addEventListener("click", (e) => {
-    const el = e.target.closest("[data-act]");
-    if (!el) return;
+    const el = e.target.closest("[data-act]"); if (!el) return;
     const a = el.dataset.act;
-    if (a === "closeModal" && el.classList.contains("modal-bg") && e.target !== el) return; // click inside modal
-    if (["tsel", "tpick", "partner", "newsMine"].includes(a)) return;
-    act(a, el, e);
+    if (a === "closeModal" && el.classList.contains("modal-bg") && e.target !== el) return;
+    if (["teamConf", "setupYear"].includes(a)) return;
+    act(a, el);
   });
   document.addEventListener("change", (e) => {
-    const el = e.target;
-    const a = el.dataset && el.dataset.act;
-    if (a === "tsel") { const set = el.dataset.side === "give" ? ui.trade.give : ui.trade.get; const id = +el.dataset.id; el.checked ? set.add(id) : set.delete(id); ui.trade.msg = null; render(); }
-    else if (a === "tpick") { const set = el.dataset.side === "give" ? ui.trade.givePicks : ui.trade.getPicks; const k = +el.dataset.k; el.checked ? set.add(k) : set.delete(k); ui.trade.msg = null; render(); }
-    else if (a === "partner") { resetTrade(el.value); render(); }
-    else if (a === "newsMine") { ui.newsMine = el.checked; render(); }
+    const el = e.target, a = el.dataset && el.dataset.act;
+    if (a === "teamConf") { GM.setTeamConf(el.dataset.id, el.value); render(); }
+    else if (a === "setupYear" || el.id === "setupRange") { ui.setup.year = +el.value; render(); }
+    else if (el.id === "optReal") ui.setup.realCareers = el.checked;
+    else if (el.id === "optHist") ui.setup.followHistory = el.checked;
+    else if (el.id === "optHistory") { GM.S.opts.followHistory = el.checked; GM.save(); render(); }
+    else if (el.id === "optCareers") { GM.S.opts.realCareers = el.checked; GM.save(); }
+    else if (el.id === "newsKind") { ui.newsKind = el.value; render(); }
     else if (el.id === "pteam") { ui.players.team = el.value; render(); }
-    else if (el.id === "importFile" && el.files[0]) {
-      const r = new FileReader();
-      r.onload = () => { try { const obj = JSON.parse(r.result); if (!obj.teams || !obj.players) throw 0; GM.importState(obj); ui.tab = "dashboard"; toast("Save loaded."); render(); } catch (err) { toast("That file isn't a valid save.", true); } };
-      r.readAsText(el.files[0]);
-    }
+    else if (el.id === "txTeam") { ui.txTeam = el.value; render(); }
+    else if (el.id === "importFile" && el.files[0]) { const r = new FileReader(); r.onload = () => { try { const o = JSON.parse(r.result); if (!o.rules) throw 0; GM.importState(o); ui.tab = "office"; toast("League loaded."); render(); } catch (err) { toast("That file isn't a Courtside save.", true); } }; r.readAsText(el.files[0]); }
   });
-  let qTimer;
   document.addEventListener("input", (e) => {
-    if (e.target.id === "pq") {
-      clearTimeout(qTimer);
-      const v = e.target.value;
-      qTimer = setTimeout(() => { ui.players.q = v; render(); const el = $("#pq"); if (el) { el.focus(); el.setSelectionRange(v.length, v.length); } }, 200);
-    }
+    if (e.target.id === "setupRange") { const s = $("#setupYear"); if (s) s.value = e.target.value; }
+    if (e.target.id === "pq") { clearTimeout(ui.qT); const v = e.target.value; ui.qT = setTimeout(() => { ui.players.q = v; render(); const el = $("#pq"); if (el) { el.focus(); el.setSelectionRange(v.length, v.length); } }, 200); }
   });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && ui.modal) { ui.modal = null; render(); } });
 
-  // boot
   GM.load();
   render();
 })();

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bundle the app into one self-contained HTML file (dist/courtside-gm.html).
+"""Bundle the app into one self-contained HTML file (dist/courtside.html).
 
     python scripts/bundle.py              # full HTML document
     python scripts/bundle.py --fragment   # body-only fragment (for hosts that add their own <html>/<head>)
@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fragment", action="store_true")
-    ap.add_argument("--out", type=Path, default=ROOT / "dist" / "courtside-gm.html")
+    ap.add_argument("--out", type=Path, default=ROOT / "dist" / "courtside.html")
     a = ap.parse_args()
     html = (ROOT / "index.html").read_text()
     css = (ROOT / "css" / "style.css").read_text()

@@ -1,11 +1,15 @@
-// WNBA GM simulator engine: league state, game simulation, AI front offices,
-// trades, free agency, draft and offseason. No DOM access in this file.
+// Courtside commissioner engine: an alternate-history WNBA that starts in any
+// season from 1997 to 2026. Every team is AI-run; the commissioner controls
+// the league's structure and rules. No DOM access in this file.
 (function () {
   "use strict";
   const D = window.LEAGUE_DATA;
   const NP = window.NAME_POOL;
+  const F = Object.fromEntries(D.fields.map((k, i) => [k, i]));
+  const REAL = Object.fromEntries(D.players.map((p) => [p.id, p]));
+  const LAST_REAL = D.last;
 
-  // ---------- small helpers ----------
+  // ---------- helpers ----------
   const rnd = Math.random;
   const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
   const randn = () => { let u = 0, v = 0; while (!u) u = rnd(); while (!v) v = rnd(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); };
@@ -13,292 +17,271 @@
   const shuffle = (a) => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
   const sum = (a) => a.reduce((s, x) => s + x, 0);
   const round1 = (x) => Math.round(x * 10) / 10;
+  const MIN_TEMPLATE = [34, 32, 30, 28, 26, 20, 14, 8, 5, 3];
+  const SAVE_KEY = "courtside-commish-v2";
+  const SKILLS = ["ins", "thr", "fts", "ply", "reb", "def", "ath"];
 
-  const MIN_TEMPLATE = [34, 32, 30, 28, 26, 20, 14, 8, 5, 3]; // 200 minutes
-  const SAVE_KEY = "wnba-gm-save-v1";
-  const STAT_KEYS = ["gp", "gs", "min", "pts", "reb", "ast", "stl", "blk", "tov", "fgm", "fga", "tpm", "tpa", "ftm", "fta"];
+  let S = null;
 
-  let S = null; // the live game state
-  const listeners = [];
-  const emit = () => listeners.forEach((f) => f(S));
-
-  // ---------- state creation ----------
-  function newGame(userTeam) {
-    const econ = D.econ;
-    S = {
-      version: 1,
-      season: D.startSeason,
-      phase: "preseason",
-      day: 0,
-      userTeam,
-      econ: { cap: econ.salaryCap, max: econ.maxSalary, min: econ.minSalary, rookieTop: econ.rookieTopSalary, growth: econ.capGrowth, rosterMin: econ.rosterMin, rosterMax: econ.rosterMax },
-      sim: { ...D.sim },
-      teams: D.teams.map((t) => ({ id: t.id, city: t.city, name: t.name, color: t.color, conf: t.conf, last: t.last, dead: [], rotation: null, w: 0, l: 0, hw: 0, hl: 0, pf: 0, pa: 0, streak: 0 })),
-      players: {},
-      nextPid: 9000000,
-      schedule: [],
-      boxes: {},
-      playoffs: null,
-      picks: [],
-      prospects: [],
-      draft: null,
-      history: [],
-      news: [],
-      tradeLog: [],
+  // ---------- era defaults ----------
+  function eraCap(y) {
+    // Estimated salary caps (the source data has no salary information).
+    const pts = [[1997, 500e3], [2008, 800e3], [2019, 1.0e6], [2020, 1.3e6], [2025, 1.5e6], [2026, 7.0e6]];
+    if (y >= 2026) return 7.0e6;
+    for (let i = 1; i < pts.length; i++) if (y <= pts[i][0]) {
+      const [y0, c0] = pts[i - 1], [y1, c1] = pts[i];
+      return Math.round((c0 + ((y - y0) / (y1 - y0)) * (c1 - c0)) / 5000) * 5000;
+    }
+    return 7.0e6;
+  }
+  function eraRules(y) {
+    const games = (D.league[y] || D.league[LAST_REAL]).games;
+    const base = {
+      games, cap: eraCap(y), capGrowth: 0.05, maxPct: 0.2, minPct: 0.04,
+      rosterMin: 11, rosterMax: y >= 2026 ? 15 : 13, draftRounds: y >= 2026 ? 3 : y >= 2003 ? 3 : 4,
+      lottery: true, lotteryTeams: 4, lotteryPicks: 4, expansionProtect: 6,
+      playoffTeams: 8, seeding: "conference", earlyBo: 3, semisBo: 3, finalsBo: 3, tradeDeadline: 0.65,
     };
-    for (const p of D.players) {
-      const pl = {
-        id: p.id, name: p.name, team: p.team, pos: p.pos, ht: p.ht, age: p.age, exp: p.exp ?? 0,
-        school: p.school, acq: p.acq, r: { ...p.r }, c: { ...p.c }, inj: 0, injType: null,
-        stats: {}, po: {}, career: [],
-        hist: { ...(p.career || {}) }, last: { ...p.s },
-        real: true,
-      };
-      if (!pl.team) { pl.c = { sal: 0, yrs: 0, rookie: false }; pl.ask = askingContract(pl); }
-      S.players[pl.id] = pl;
+    if (y === 1997) Object.assign(base, { playoffTeams: 4, seeding: "overall", earlyBo: 1, semisBo: 1, finalsBo: 1 });
+    else if (y < 2005) Object.assign(base, { playoffTeams: Math.min(8, Math.max(4, D.teams[y].length >= 12 ? 8 : 4)) });
+    else if (y < 2016) Object.assign(base, { finalsBo: 5 });
+    else if (y < 2025) Object.assign(base, { seeding: "overall", semisBo: 5, finalsBo: 5 });
+    else Object.assign(base, { seeding: "overall", semisBo: 5, finalsBo: 7 });
+    return base;
+  }
+
+  // ---------- real data access ----------
+  const realLine = (pid, y) => { const r = REAL[pid]; return r && r.s[y] ? r.s[y] : null; };
+  const realSeasons = (pid) => (REAL[pid] ? Object.keys(REAL[pid].s).map(Number) : []);
+  function realRatings(pid, y) {
+    const l = realLine(pid, y); if (!l) return null;
+    return { ovr: l[F.ovr], ins: l[F.ins], thr: l[F.thr], fts: l[F.fts], ply: l[F.ply], reb: l[F.rebR], def: l[F.def], ath: l[F.ath] };
+  }
+  function realPeakFrom(pid, y) {
+    const ss = realSeasons(pid).filter((s) => s >= y);
+    return ss.length ? Math.max(...ss.map((s) => realLine(pid, s)[F.ovr])) : null;
+  }
+  const fidAbbr = (fid, y) => { const t = (D.teams[y] || []).find((x) => x.fid === fid); return t ? t.abbr : fid; };
+
+  // ---------- new league ----------
+  function newLeague(startYear, opts = {}) {
+    const y = startYear;
+    S = {
+      version: 2, startYear: y, season: y, phase: "preseason", day: 0,
+      opts: { realCareers: opts.realCareers !== false, followHistory: opts.followHistory !== false },
+      rules: eraRules(y), rulesNext: null,
+      conferences: [],
+      teams: [], players: {}, nextPid: 9000000, nextFid: 1,
+      schedule: [], boxes: {}, playoffs: null, draft: null, lastDraft: null,
+      history: [], news: [], transactions: [], events: [], awards: null,
+    };
+    const tl = D.teams[y];
+    const confs = [...new Set(tl.map((t) => t.conf).filter(Boolean))];
+    S.conferences = confs.length ? confs : ["League"];
+    for (const t of tl) S.teams.push(mkTeam({ fid: t.fid, abbr: t.abbr, city: t.city, name: t.name, color: t.color, conf: t.conf || S.conferences[0] }, y));
+
+    // Players: everyone who played in season y; plus those who sat out y but played y-1 and y+1 (injured).
+    for (const rp of D.players) {
+      const line = rp.s[y];
+      const ss = Object.keys(rp.s).map(Number);
+      if (line) {
+        const p = mkRealPlayer(rp, y);
+        p.team = S.teams.find((t) => t.fid === line[F.fid]) ? line[F.fid] : null;
+        p.c = estContract(p, true);
+        if (!p.team) { p.c = { sal: 0, yrs: 0 }; p.ask = askingContract(p); }
+        S.players[p.id] = p;
+      } else if (rp.s[y - 1] && rp.s[y + 1]) {
+        const p = mkRealPlayer(rp, y - 1);
+        p.team = S.teams.find((t) => t.fid === rp.s[y - 1][F.fid]) ? rp.s[y - 1][F.fid] : null;
+        if (p.team) { p.c = estContract(p, true); p.inj = 999; p.injType = "out for the season"; }
+        S.players[p.id] = p;
+      }
     }
-    // Pad the free-agent pool with generated veterans so there's a market.
-    for (let i = 0; i < 24; i++) {
-      const p = genPlayer({ age: 25 + Math.floor(rnd() * 8), ovrMean: 46, ovrSd: 5, potRoom: 2 });
-      p.ask = askingContract(p);
-      S.players[p.id] = p;
-    }
-    // Draft picks for the next two drafts (rounds 1-3).
-    for (const yr of [S.season, S.season + 1]) addPicksFor(yr);
-    S.prospects = genProspects(S.season);
-    // AI teams trim to roster max; nobody is over the cap.
-    for (const t of S.teams) if (t.id !== userTeam) aiRosterFix(t.id, true);
-    S.schedule = makeSchedule();
-    log(`Welcome to the ${teamName(userTeam)} front office. The ${S.season} season starts when you're ready.`);
+    // Free-agent pool depth.
+    for (let i = 0; i < 20; i++) { const p = genPlayer({ age: 24 + Math.floor(rnd() * 8), ovrMean: 44, ovrSd: 5, potRoom: 2 }); p.ask = askingContract(p); S.players[p.id] = p; }
+    for (const t of S.teams) aiRosterFix(t.fid, true);
+    if (S.opts.followHistory) queueHistoryEvents(y + 1);
+    log(`You are the commissioner. The ${y} season is ready: ${S.teams.length} teams, ${S.rules.games} games, ${S.rules.playoffTeams} playoff spots.`);
     save();
-    emit();
     return S;
   }
-
-  function addPicksFor(yr) {
-    for (const t of S.teams) for (const rd of [1, 2, 3]) S.picks.push({ season: yr, round: rd, orig: t.id, owner: t.id });
+  function mkTeam(t, y) {
+    return { fid: t.fid, abbr: t.abbr, city: t.city, name: t.name, color: t.color || "#666", conf: t.conf, founded: y, active: true,
+      w: 0, l: 0, hw: 0, hl: 0, pf: 0, pa: 0, streak: 0, dead: [], hist: [], titles: 0 };
   }
-
-  function genName() { return pick(NP.first) + " " + pick(NP.last); }
+  function mkRealPlayer(rp, y) {
+    const r = realRatings(rp.id, y);
+    const peak = realPeakFrom(rp.id, y) ?? r.ovr;
+    return {
+      id: rp.id, name: rp.n, pos: rp.pos, ht: rp.ht, born: rp.born, school: (rp.col && rp.col !== "None" ? rp.col : rp.ctry) || "", ctry: rp.ctry,
+      real: true, team: null, r: { ...r, pot: Math.max(r.ovr, peak) }, c: { sal: 0, yrs: 0 }, inj: 0, injType: null,
+      stats: {}, po: {}, career: [], awards: [], draft: rp.dy ? { season: rp.dy, round: rp.dr, pick: rp.dn, real: true } : null,
+    };
+  }
   function genPlayer({ age, ovrMean, ovrSd, potRoom, draft }) {
     const ovr = Math.round(clamp(ovrMean + randn() * ovrSd, 32, 82));
     const pos = pick(["G", "G", "G", "F", "F", "F", "C", "G-F", "F-C"]);
     const big = pos.includes("C") ? 1 : pos === "F" || pos === "F-C" ? 0.5 : 0;
-    const sk = (base) => Math.round(clamp(base + randn() * 9, 25, 95));
-    const r = {
-      ovr,
-      pot: Math.round(clamp(ovr + Math.max(0, potRoom * (0.6 + 0.6 * rnd())), ovr, 95)),
-      ins: sk(ovr - 4 + big * 10), thr: sk(ovr - 2 - big * 14), fts: sk(ovr - 2), ply: sk(ovr - 4 - big * 10),
-      reb: sk(ovr - 8 + big * 22), def: sk(ovr - 2 + big * 4), ath: sk(ovr),
-    };
+    const sk = (b) => Math.round(clamp(b + randn() * 9, 25, 95));
     const id = S.nextPid++;
     return {
-      id, name: genName(), team: null, pos, ht: Math.round(70 + big * 7 + randn() * 2), age, exp: draft ? 0 : Math.max(0, age - 22),
-      school: pick(NP.schools), acq: "", r, c: { sal: 0, yrs: 0, rookie: false }, inj: 0, injType: null,
-      stats: {}, po: {}, career: [], hist: {}, real: false,
+      id, name: pick(NP.first) + " " + pick(NP.last), pos, ht: Math.round(70 + big * 7 + randn() * 2), born: S.season - age,
+      school: pick(NP.schools), real: false, team: null,
+      r: { ovr, pot: Math.round(clamp(ovr + Math.max(0, potRoom * (0.6 + 0.6 * rnd())), ovr, 95)),
+        ins: sk(ovr - 4 + big * 10), thr: sk(ovr - 2 - big * 14), fts: sk(ovr - 2), ply: sk(ovr - 4 - big * 10), reb: sk(ovr - 8 + big * 22), def: sk(ovr - 2 + big * 4), ath: sk(ovr) },
+      c: { sal: 0, yrs: 0 }, inj: 0, injType: null, stats: {}, po: {}, career: [], awards: [], draft: null,
     };
-  }
-
-  function genProspects(yr) {
-    const out = [];
-    for (let i = 0; i < 60; i++) {
-      const age = 20 + Math.floor(rnd() * 4);
-      // A few elite prospects at the top, long tail below.
-      const tier = i < 3 ? 62 : i < 10 ? 56 : i < 25 ? 49 : 43;
-      const p = genPlayer({ age, ovrMean: tier, ovrSd: 4.5, potRoom: Math.max(3, (25 - age) * 3.5 + (i < 10 ? 5 : 0)), draft: true });
-      p.prospect = yr;
-      // Scouting estimate: what your staff believes (noisy).
-      p.scout = { ovr: Math.round(p.r.ovr + randn() * 3), pot: Math.round(p.r.pot + randn() * 5) };
-      S.players[p.id] = p;
-      out.push(p.id);
-    }
-    return out;
   }
 
   // ---------- accessors ----------
   const P = (id) => S.players[id];
-  const T = (id) => (S ? S.teams : D.teams).find((t) => t.id === id);
-  const teamName = (id) => { const t = T(id); return t ? `${t.city} ${t.name}` : "Free agent"; };
-  const roster = (tid) => Object.values(S.players).filter((p) => p.team === tid && !p.retired);
+  const T = (fid) => S.teams.find((t) => t.fid === fid);
+  const activeTeams = () => S.teams.filter((t) => t.active);
+  const teamName = (fid) => { const t = T(fid); return t ? `${t.city} ${t.name}` : "Free agent"; };
+  const age = (p) => S.season - p.born;
+  const roster = (fid) => Object.values(S.players).filter((p) => p.team === fid && !p.retired);
   const freeAgents = () => Object.values(S.players).filter((p) => !p.team && !p.retired && !p.prospect);
-  function payroll(tid, season = S.season) {
-    let s = sum(roster(tid).map((p) => p.c.sal));
-    s += sum(T(tid).dead.filter((d) => d.season === season).map((d) => d.sal));
-    return s;
-  }
-  const capSpace = (tid) => S.econ.cap - payroll(tid);
-  function log(text, tid) { S.news.unshift({ season: S.season, day: S.day, phase: S.phase, text, team: tid || null }); if (S.news.length > 300) S.news.length = 300; }
+  const payroll = (fid) => sum(roster(fid).map((p) => p.c.sal)) + sum(T(fid).dead.filter((d) => d.season === S.season).map((d) => d.sal));
+  const capSpace = (fid) => S.rules.cap - payroll(fid);
+  const econ = () => ({ cap: S.rules.cap, max: S.rules.cap * S.rules.maxPct, min: S.rules.cap * S.rules.minPct });
+  function log(text, fid, kind) { S.news.unshift({ season: S.season, day: S.day, phase: S.phase, text, team: fid || null, kind: kind || null }); if (S.news.length > 400) S.news.length = 400; }
+  function txn(text, fid) { S.transactions.unshift({ season: S.season, phase: S.phase, text, team: fid }); if (S.transactions.length > 600) S.transactions.length = 600; }
 
-  // ---------- valuation ----------
+  // ---------- valuation & contracts ----------
   function talent(p) {
-    const yf = p.age <= 22 ? 0.65 : p.age <= 24 ? 0.5 : p.age <= 26 ? 0.3 : p.age <= 27 ? 0.15 : 0;
+    const a = age(p);
+    const yf = a <= 22 ? 0.65 : a <= 24 ? 0.5 : a <= 26 ? 0.3 : a <= 27 ? 0.15 : 0;
     let t = p.r.ovr + (p.r.pot - p.r.ovr) * yf;
-    if (p.age >= 31) t -= (p.age - 30) * 1.4;
+    if (a >= 31) t -= (a - 30) * 1.4;
     return t;
   }
   function marketSalary(p) {
-    const e = S.econ;
-    const f = clamp((talent(p) - 50) / 44, 0, 1);
+    const e = econ(); const f = clamp((talent(p) - 50) / 44, 0, 1);
     return clamp(e.min + (e.max - e.min) * Math.pow(f, 2.1), e.min, e.max);
   }
-  function askingContract(p) {
-    const sal = Math.round(marketSalary(p) * (0.95 + rnd() * 0.15) / 5000) * 5000;
-    const yrs = p.age >= 32 ? 1 : p.age >= 29 ? 1 + Math.floor(rnd() * 2) : 2 + Math.floor(rnd() * 3);
-    return { sal: clamp(sal, S.econ.min, S.econ.max), yrs };
+  function estContract(p, initial) {
+    const sal = Math.round(marketSalary(p) * (0.9 + rnd() * 0.2) / 1000) * 1000;
+    const yrs = age(p) >= 31 ? 1 + Math.floor(rnd() * 2) : 1 + Math.floor(rnd() * 4);
+    return { sal, yrs };
   }
-  // Trade value of a player to a given team (rebuilding teams prize youth).
+  function askingContract(p) {
+    const e = econ();
+    const sal = Math.round(marketSalary(p) * (0.95 + rnd() * 0.15) / 1000) * 1000;
+    const a = age(p);
+    return { sal: clamp(sal, e.min, e.max), yrs: a >= 32 ? 1 : a >= 29 ? 1 + Math.floor(rnd() * 2) : 2 + Math.floor(rnd() * 3) };
+  }
   function playerValue(p, forTeam) {
     const mode = forTeam ? teamMode(forTeam) : "neutral";
-    let t = mode === "rebuild" ? talent(p) + (p.age <= 24 ? 3 : 0) - (p.age >= 29 ? (p.age - 28) * 2 : 0)
+    const a = age(p);
+    const t = mode === "rebuild" ? talent(p) + (a <= 24 ? 3 : 0) - (a >= 29 ? (a - 28) * 2 : 0)
       : mode === "contend" ? p.r.ovr * 0.75 + talent(p) * 0.25 : talent(p);
     let v = Math.pow(Math.max(0, t - 44), 2.2) / 12;
-    // Contract surplus: underpaid players are worth more.
-    const yrs = Math.max(1, p.c.yrs);
-    v += ((marketSalary(p) - p.c.sal) / 100000) * Math.min(yrs, 3) * 0.8;
-    if (p.inj > 10) v *= 0.85;
+    v += ((marketSalary(p) - p.c.sal) / (econ().cap / 70)) * Math.min(Math.max(1, p.c.yrs), 3) * 0.8;
+    if (p.inj > 10) v *= 0.8;
     return Math.max(0, v);
   }
-  function pickValue(pk, forTeam) {
-    const mode = forTeam ? teamMode(forTeam) : "neutral";
-    const proj = projectedRank(pk.orig); // 1 = best team
-    const n = S.teams.length;
-    const slot = (n - proj + 1) + (pk.round - 1) * n; // approx draft slot
-    let v = pk.round === 1 ? 4 + 26 * Math.pow((n - slot + 1) / n, 1.6) : pk.round === 2 ? 2.5 : 0.6;
-    if (pk.season > S.season) v *= 0.9;
-    if (mode === "rebuild") v *= 1.35; else if (mode === "contend") v *= 0.75;
-    return v;
-  }
-  function teamRating(tid) {
-    const rot = rotation(tid, true);
+  function teamRating(fid) {
+    const rot = rotation(fid, true);
     if (!rot.length) return 40;
     return sum(rot.map((x) => P(x.id).r.ovr * x.min)) / sum(rot.map((x) => x.min));
   }
   let rankCache = null;
   function powerRanks() {
-    if (rankCache && rankCache.key === S.day + S.phase + S.season) return rankCache.map;
-    const arr = S.teams.map((t) => {
-      const gp = t.w + t.l;
-      const rec = gp ? (t.w / gp - 0.5) * 30 : 0;
-      return { id: t.id, score: teamRating(t.id) + rec * Math.min(1, gp / 20) };
-    }).sort((a, b) => b.score - a.score);
-    const map = {}; arr.forEach((x, i) => (map[x.id] = i + 1));
-    rankCache = { key: S.day + S.phase + S.season, map };
+    const key = S.season + S.phase + S.day + S.teams.length + Object.keys(S.players).length;
+    if (rankCache && rankCache.key === key) return rankCache.map;
+    const arr = activeTeams().map((t) => { const gp = t.w + t.l; return { fid: t.fid, s: teamRating(t.fid) + (gp ? (t.w / gp - 0.5) * 30 * Math.min(1, gp / 20) : 0) }; }).sort((a, b) => b.s - a.s);
+    const map = {}; arr.forEach((x, i) => (map[x.fid] = i + 1));
+    rankCache = { key, map };
     return map;
   }
-  const projectedRank = (tid) => powerRanks()[tid];
-  function teamMode(tid) {
-    const r = projectedRank(tid);
-    return r <= 5 ? "contend" : r >= 11 ? "rebuild" : "neutral";
+  function teamMode(fid) {
+    const n = activeTeams().length, r = powerRanks()[fid] || n;
+    return r <= Math.ceil(n / 3) ? "contend" : r > n - Math.ceil(n / 3) ? "rebuild" : "neutral";
   }
 
-  // ---------- rotation & minutes ----------
-  function rotation(tid, ignoreInj) {
-    const t = T(tid);
-    let ps = roster(tid).filter((p) => ignoreInj || p.inj === 0);
-    let order;
-    if (t.rotation && tid === S.userTeam) {
-      const ids = new Set(ps.map((p) => p.id));
-      order = t.rotation.filter((id) => ids.has(id)).map(P);
-      for (const p of ps.sort((a, b) => b.r.ovr - a.r.ovr)) if (!order.includes(p)) order.push(p);
-    } else order = ps.sort((a, b) => b.r.ovr - a.r.ovr);
+  // ---------- rotation ----------
+  function rotation(fid, ignoreInj) {
+    const order = roster(fid).filter((p) => ignoreInj ? p.inj < 999 : p.inj === 0).sort((a, b) => b.r.ovr - a.r.ovr);
     const n = Math.min(order.length, MIN_TEMPLATE.length);
     const mins = MIN_TEMPLATE.slice(0, n);
     const deficit = 200 - sum(mins);
     if (deficit > 0 && n) for (let i = 0; i < n; i++) mins[i] += deficit / n;
     return order.slice(0, n).map((p, i) => ({ id: p.id, min: mins[i], start: i < 5 }));
   }
-  function setRotation(order) { T(S.userTeam).rotation = order.slice(); save(); emit(); }
 
   // ---------- schedule ----------
-  function makeSchedule() {
-    const ids = shuffle(S.teams.map((t) => t.id));
-    const n = ids.length; // 15
-    const arr = ids.concat(n % 2 ? [null] : []);
-    const m = arr.length;
-    const rounds = [];
+  function rrRounds(ids) {
+    const arr = ids.concat(ids.length % 2 ? [null] : []);
+    const m = arr.length, rounds = [];
     let a = arr.slice();
     for (let r = 0; r < m - 1; r++) {
-      const games = [];
-      for (let i = 0; i < m / 2; i++) { const x = a[i], y = a[m - 1 - i]; if (x && y) games.push([x, y]); }
-      rounds.push(games);
+      const g = [];
+      for (let i = 0; i < m / 2; i++) { const x = a[i], y = a[m - 1 - i]; if (x && y) g.push(rnd() < 0.5 ? [x, y] : [y, x]); }
+      rounds.push(g);
       a = [a[0], a[m - 1], ...a.slice(1, m - 1)];
     }
-    let days = [];
-    for (let cyc = 0; cyc < 3; cyc++) for (const g of rounds) days.push(g.map(([x, y]) => (cyc % 2 ? [y, x] : [x, y])));
-    // Extra games: a random cycle through all teams gives each team 2 more games.
-    const target = S.sim.games || 44;
-    const extraPer = target - 3 * (n - 1);
-    if (extraPer > 0) {
-      for (let e = 0; e < Math.floor(extraPer / 2); e++) {
-        const cyc = shuffle(ids.slice());
-        const edges = cyc.map((x, i) => [x, cyc[(i + 1) % n]]);
-        // split the cycle into matchings
-        const d1 = [], d2 = [], d3 = [];
-        edges.forEach((ed, i) => (i === n - 1 && n % 2 ? d3 : i % 2 ? d2 : d1).push(ed));
-        days.push(d1, d2); if (d3.length) days.push(d3);
-      }
-    }
-    days = shuffle(days);
-    // Randomize home/away within each game.
-    const sched = [];
-    let gid = 1;
-    days.forEach((games, d) => games.forEach(([x, y]) => {
-      const flip = rnd() < 0.5;
-      sched.push({ gid: gid++, day: d + 1, home: flip ? x : y, away: flip ? y : x, played: false });
-    }));
-    return sched;
+    return rounds;
   }
-  const lastDay = () => Math.max(...S.schedule.map((g) => g.day));
+  function makeSchedule() {
+    const ids = shuffle(activeTeams().map((t) => t.fid));
+    const n = ids.length, G = S.rules.games;
+    let days = [];
+    const full = Math.floor(G / (n - 1));
+    for (let c = 0; c < full; c++) days.push(...rrRounds(shuffle(ids.slice())));
+    const extra = G - full * (n - 1);
+    if (extra > 0) days.push(...shuffle(rrRounds(shuffle(ids.slice()))).slice(0, extra));
+    days = shuffle(days);
+    const out = []; let gid = 1;
+    days.forEach((g, d) => g.forEach(([h, a]) => out.push({ gid: gid++, day: d + 1, home: h, away: a, played: false })));
+    return out;
+  }
+  const lastDay = () => Math.max(0, ...S.schedule.map((g) => g.day));
+  const tradeDeadlineDay = () => Math.round(lastDay() * S.rules.tradeDeadline);
 
-  // ---------- game simulation ----------
-  function simGame(homeId, awayId, opts = {}) {
-    const k = S.sim.marginPerRating, home = opts.neutral ? 0 : S.sim.homeAdv;
-    const rh = rotation(homeId), ra = rotation(awayId);
+  // ---------- game sim ----------
+  function leaguePts() { return (D.league[S.season] || D.league[LAST_REAL]).ppg; }
+  function simGame(h, a, opts = {}) {
+    const lp = leaguePts();
+    const k = Math.max(0.95, D.marginPer80) * lp / 80, home = opts.neutral ? 0 : 2.2 * lp / 87;
+    const rh = rotation(h), ra = rotation(a);
     const trh = rh.length ? sum(rh.map((x) => P(x.id).r.ovr * x.min)) / 200 : 40;
     const tra = ra.length ? sum(ra.map((x) => P(x.id).r.ovr * x.min)) / 200 : 40;
-    const base = S.sim.leaguePts;
-    const margin = (trh - tra) * k + home;
-    let hs = Math.round(base + margin / 2 + randn() * 8.6);
-    let as = Math.round(base - margin / 2 + randn() * 8.6);
-    let ot = 0;
-    while (hs === as) { ot++; hs += Math.round(9 + randn() * 3.5 + (trh - tra) * 0.15); as += Math.round(9 + randn() * 3.5); }
-    const box = { gid: opts.gid, home: homeId, away: awayId, hs, as, ot, players: {} };
-    box.players[homeId] = distributeBox(rh, hs, as, ot);
-    box.players[awayId] = distributeBox(ra, as, hs, ot);
+    const margin = (trh - tra) * k + home, sd = 8.6 * lp / 87;
+    let hs = Math.round(lp + margin / 2 + randn() * sd), as = Math.round(lp - margin / 2 + randn() * sd), ot = 0;
+    while (hs === as) { ot++; hs += Math.round(lp / 9 + randn() * 3.5 + (trh - tra) * 0.15); as += Math.round(lp / 9 + randn() * 3.5); }
+    const box = { gid: opts.gid, home: h, away: a, hs, as, ot, players: {} };
+    box.players[h] = distributeBox(rh, hs, as, ot, lp);
+    box.players[a] = distributeBox(ra, as, hs, ot, lp);
     return box;
   }
-
-  function distributeBox(rot, pts, oppPts, ot) {
-    const extra = ot * 5;
-    const ps = rot.map((x) => ({ p: P(x.id), min: x.min * (1 + extra / 200) * (0.88 + rnd() * 0.24), start: x.start }));
-    const totMin = sum(ps.map((x) => x.min));
-    ps.forEach((x) => (x.min = (x.min * (200 + extra)) / totMin));
+  function distributeBox(rot, pts, oppPts, ot, lp) {
+    if (!rot.length) return [];
+    const extra = ot * 5, sc = lp / 87;
+    const ps = rot.map((x) => ({ p: P(x.id), min: x.min * (0.88 + rnd() * 0.24), start: x.start }));
+    const tm = sum(ps.map((x) => x.min)); ps.forEach((x) => (x.min = (x.min * (200 + extra)) / tm));
     const lw = () => Math.exp(randn() * 0.33);
     const alloc = (total, wfn) => {
-      const w = ps.map((x) => x.min * wfn(x.p) * lw());
-      const W = sum(w) || 1;
-      const raw = w.map((v) => (v / W) * total);
-      const out = raw.map(Math.floor);
+      const w = ps.map((x) => x.min * wfn(x.p) * lw()); const W = sum(w) || 1;
+      const raw = w.map((v) => (v / W) * total); const out = raw.map(Math.floor);
       let rem = Math.round(total) - sum(out);
-      const order = raw.map((v, i) => [v - out[i], i]).sort((a, b) => b[0] - a[0]);
-      for (let i = 0; rem > 0 && i < order.length; i++, rem--) out[order[i][1]]++;
+      const ord = raw.map((v, i) => [v - out[i], i]).sort((a, b) => b[0] - a[0]);
+      for (let i = 0; rem > 0 && i < ord.length; i++, rem--) out[ord[i][1]]++;
       return out;
     };
     const off = (p) => 0.45 * p.r.ins + 0.35 * p.r.thr + 0.2 * p.r.ovr;
     const ptsA = alloc(pts, (p) => Math.exp((off(p) - 55) / 26));
+    const eraThree = S.season < 2010 ? 0.7 : S.season < 2018 ? 0.85 : 1;
     const lines = ps.map((x, i) => {
       const p = x.p, pt = ptsA[i];
-      const f3 = clamp(0.05 + (p.r.thr - 35) * 0.009, 0, 0.55);
+      const f3 = clamp((0.05 + (p.r.thr - 35) * 0.009) * eraThree, 0, 0.55);
       const fft = clamp(0.13 + (p.r.ath - 50) * 0.003 + (p.r.ins - 50) * 0.002, 0.04, 0.3);
-      let tpm = Math.round((pt * f3) / 3 + (rnd() - 0.5));
-      tpm = clamp(tpm, 0, Math.floor(pt / 3));
-      let ftm = Math.round(pt * fft + (rnd() - 0.5) * 2);
-      ftm = clamp(ftm, 0, pt - tpm * 3);
+      let tpm = clamp(Math.round((pt * f3) / 3 + (rnd() - 0.5)), 0, Math.floor(pt / 3));
+      let ftm = clamp(Math.round(pt * fft + (rnd() - 0.5) * 2), 0, pt - tpm * 3);
       if ((pt - tpm * 3 - ftm) % 2) ftm += ftm > 0 && rnd() < 0.5 ? -1 : 1;
       ftm = clamp(ftm, 0, pt - tpm * 3);
       const twom = Math.max(0, (pt - tpm * 3 - ftm) / 2);
       const p3 = clamp(0.25 + p.r.thr * 0.0017 + randn() * 0.06, 0.15, 0.6);
-      const p2 = clamp(0.41 + p.r.ins * 0.0017 + randn() * 0.06, 0.3, 0.72);
+      const p2 = clamp(0.39 + p.r.ins * 0.0017 + randn() * 0.06, 0.3, 0.72);
       const pf = clamp(0.58 + p.r.fts * 0.0033, 0.5, 0.96);
       const tpa = tpm + Math.round((tpm || (p.r.thr > 50 && x.min > 12 ? 1 : 0)) * (1 / p3 - 1) + (rnd() - 0.3));
       const twoa = Math.round(twom / p2 + (rnd() - 0.5) * 0.8);
@@ -306,604 +289,616 @@
       return { id: p.id, min: Math.round(x.min), start: x.start, pts: pt, tpm, tpa, fgm: twom + tpm, fga: twoa + tpa, ftm, fta, reb: 0, ast: 0, stl: 0, blk: 0, tov: 0 };
     });
     const fgm = sum(lines.map((l) => l.fgm));
-    const teamReb = clamp(Math.round(34 + (pts - oppPts) * 0.08 + randn() * 4), 22, 50);
-    const rebA = alloc(teamReb, (p) => Math.exp((p.r.reb - 50) / 22));
+    const rebA = alloc(clamp(Math.round((34 + (pts - oppPts) * 0.08 + randn() * 4) * (0.8 + 0.2 * sc)), 20, 52), (p) => Math.exp((p.r.reb - 50) / 27));
     const astA = alloc(Math.round(fgm * (0.58 + randn() * 0.06)), (p) => Math.exp((p.r.ply - 50) / 15));
     const stlA = alloc(clamp(Math.round(7.5 + randn() * 2.5), 1, 16), (p) => Math.exp((p.r.def + p.r.ath - 100) / 24));
     const blkA = alloc(clamp(Math.round(3.8 + randn() * 1.8), 0, 11), (p) => Math.exp((p.r.reb + p.r.def + p.r.ath - 150) / 22));
-    const tovA = alloc(clamp(Math.round(13 + randn() * 3), 5, 24), (p) => Math.exp((off(p) - 55) / 30) * Math.exp((p.r.ply - 50) / 60));
+    const tovA = alloc(clamp(Math.round(14 + randn() * 3), 5, 25), (p) => Math.exp((off(p) - 55) / 30) * Math.exp((p.r.ply - 50) / 60));
     lines.forEach((l, i) => { l.reb = rebA[i]; l.ast = astA[i]; l.stl = stlA[i]; l.blk = blkA[i]; l.tov = tovA[i]; });
     return lines;
   }
-
   function applyBox(box, playoff) {
-    for (const tid of [box.home, box.away]) {
-      for (const l of box.players[tid]) {
-        const p = P(l.id);
-        const bucket = playoff ? p.po : p.stats;
-        const st = (bucket[S.season] ||= { team: tid, ...Object.fromEntries(STAT_KEYS.map((k) => [k, 0])) });
-        st.team = tid;
-        st.gp++; if (l.start) st.gs++;
-        for (const k of ["min", "pts", "reb", "ast", "stl", "blk", "tov", "fgm", "fga", "tpm", "tpa", "ftm", "fta"]) st[k] += l[k];
-        // Injury roll
-        if (p.inj === 0 && rnd() < 0.0045 * (l.min / 30)) {
-          const g = Math.max(1, Math.round(-Math.log(rnd()) * 5));
-          p.inj = g; p.injType = pick(["ankle sprain", "knee soreness", "hamstring strain", "back spasms", "concussion protocol", "foot soreness", "illness", "wrist sprain"]);
-          if (g >= 5 && (tid === S.userTeam || p.r.ovr >= 75)) log(`${p.name} (${tid}) is out ~${g} games with ${p.injType}.`, tid);
-        }
+    for (const fid of [box.home, box.away]) for (const l of box.players[fid]) {
+      const p = P(l.id), bucket = playoff ? p.po : p.stats;
+      const st = (bucket[S.season] ||= { team: fid, gp: 0, gs: 0, min: 0, pts: 0, reb: 0, ast: 0, stl: 0, blk: 0, tov: 0, fgm: 0, fga: 0, tpm: 0, tpa: 0, ftm: 0, fta: 0 });
+      st.team = fid; st.gp++; if (l.start) st.gs++;
+      for (const k of ["min", "pts", "reb", "ast", "stl", "blk", "tov", "fgm", "fga", "tpm", "tpa", "ftm", "fta"]) st[k] += l[k];
+      if (p.inj === 0 && rnd() < 0.0045 * (l.min / 30)) {
+        const g = Math.max(1, Math.round(-Math.log(rnd()) * 5));
+        p.inj = g; p.injType = pick(["ankle sprain", "knee soreness", "hamstring strain", "back spasms", "concussion protocol", "foot soreness", "illness", "wrist sprain"]);
+        if (g >= 8 && p.r.ovr >= 75) log(`${p.name} (${T(fid).abbr}) is out ~${g} games with ${p.injType}.`, fid, "injury");
       }
     }
   }
-  function healDay(tids) {
-    for (const p of Object.values(S.players)) if (p.inj > 0 && p.team && (!tids || tids.has(p.team))) { p.inj--; if (!p.inj) p.injType = null; }
-  }
+  function healDay(fids) { for (const p of Object.values(S.players)) if (p.inj > 0 && p.inj < 999 && p.team && (!fids || fids.has(p.team))) { p.inj--; if (!p.inj) p.injType = null; } }
 
-  // ---------- regular season ----------
+  // ---------- season ----------
   function startSeason() {
-    const ut = S.userTeam;
-    const n = roster(ut).length;
-    if (n < S.econ.rosterMin) return { ok: false, msg: `You need at least ${S.econ.rosterMin} players to start the season (you have ${n}). Sign free agents first.` };
-    if (n > S.econ.rosterMax) return { ok: false, msg: `Your roster has ${n} players; the limit is ${S.econ.rosterMax}. Release or trade players first.` };
-    for (const t of S.teams) if (t.id !== ut) aiRosterFix(t.id);
+    if (S.phase !== "preseason") return { ok: false };
+    if (activeTeams().length < 2) return { ok: false, msg: "The league needs at least two teams." };
+    for (const t of activeTeams()) aiRosterFix(t.fid);
+    S.schedule = makeSchedule();
+    S.boxes = {};
     S.phase = "regular"; S.day = 0;
-    log(`The ${S.season} regular season is underway.`);
-    save(); emit();
+    log(`The ${S.season} season tips off: ${activeTeams().length} teams, ${S.rules.games} games each.`);
+    save();
     return { ok: true };
   }
-
-  function simDays(nDays) {
+  function simDays(n) {
     if (S.phase !== "regular") return;
     const end = lastDay();
-    for (let i = 0; i < nDays && S.day < end; i++) {
+    for (let i = 0; i < n && S.day < end; i++) {
       S.day++;
-      const games = S.schedule.filter((g) => g.day === S.day && !g.played);
-      for (const g of games) {
-        const box = simGame(g.home, g.away, { gid: g.gid });
-        g.played = true; g.hs = box.hs; g.as = box.as; g.ot = box.ot;
-        S.boxes[g.gid] = box;
-        applyBox(box, false);
+      for (const g of S.schedule.filter((x) => x.day === S.day && !x.played)) {
+        const b = simGame(g.home, g.away, { gid: g.gid });
+        g.played = true; g.hs = b.hs; g.as = b.as; g.ot = b.ot;
+        S.boxes[g.gid] = b; applyBox(b, false);
         const h = T(g.home), a = T(g.away);
-        h.pf += box.hs; h.pa += box.as; a.pf += box.as; a.pa += box.hs;
-        if (box.hs > box.as) { h.w++; h.hw++; a.l++; h.streak = h.streak > 0 ? h.streak + 1 : 1; a.streak = a.streak < 0 ? a.streak - 1 : -1; }
+        h.pf += b.hs; h.pa += b.as; a.pf += b.as; a.pa += b.hs;
+        if (b.hs > b.as) { h.w++; h.hw++; a.l++; h.streak = h.streak > 0 ? h.streak + 1 : 1; a.streak = a.streak < 0 ? a.streak - 1 : -1; }
         else { a.w++; h.l++; h.hl++; a.streak = a.streak > 0 ? a.streak + 1 : 1; h.streak = h.streak < 0 ? h.streak - 1 : -1; }
       }
       healDay();
-      if (S.day % 4 === 0) aiDaily();
+      if (S.day % 4 === 0) for (const t of activeTeams()) if (roster(t.fid).filter((p) => !p.inj).length < 9) aiRosterFix(t.fid);
+      if (S.day % 9 === 0 && S.day <= tradeDeadlineDay()) aiTrades(1);
     }
     if (S.day >= end) endRegularSeason();
-    save(); emit();
+    save();
   }
-  const tradeDeadlineDay = () => Math.round(lastDay() * 0.65);
-  const tradesOpen = () => S.phase !== "playoffs" && !(S.phase === "regular" && S.day > tradeDeadlineDay()) && S.phase !== "draft";
-
-  function standings() {
-    return S.teams.slice().sort((a, b) => {
+  function standings(conf) {
+    return activeTeams().filter((t) => !conf || t.conf === conf).sort((a, b) => {
       const pa = a.w / Math.max(1, a.w + a.l), pb = b.w / Math.max(1, b.w + b.l);
-      if (pb !== pa) return pb - pa;
-      return (b.pf - b.pa) - (a.pf - a.pa);
+      return pb !== pa ? pb - pa : (b.pf - b.pa) - (a.pf - a.pa);
     });
   }
+  function activeConfs() { return S.conferences.filter((c) => activeTeams().some((t) => t.conf === c)); }
 
   // ---------- playoffs ----------
+  function seedOrder(B) { let o = [1]; while (o.length < B) { const n = o.length * 2 + 1; o = o.flatMap((s) => [s, n - s]); } return o; }
+  function bestOfFor(fromEnd) { const r = S.rules; return fromEnd === 0 ? r.finalsBo : fromEnd === 1 ? r.semisBo : r.earlyBo; }
+  function mkBracket(label, seeds, extraRoundsAfter) {
+    const n = seeds.length;
+    const br = { label, seeds, rounds: [], champion: null, extra: extraRoundsAfter, R: n <= 1 ? 0 : Math.ceil(Math.log2(n)) };
+    if (n === 1) { br.champion = seeds[0]; return br; }
+    const B = 2 ** br.R, ord = seedOrder(B), first = [];
+    for (let i = 0; i < B; i += 2) {
+      const a = seeds[ord[i] - 1], b = seeds[ord[i + 1] - 1];
+      first.push(mkSeries(a || b, a && b ? b : null, bestOfFor(br.R - 1 + extraRoundsAfter)));
+    }
+    br.rounds.push(first);
+    advanceBracket(br);
+    return br;
+  }
+  function mkSeries(hi, lo, bo) { return { hi, lo, bestOf: bo, wh: 0, wl: 0, games: [], winner: lo ? null : hi }; }
+  function advanceBracket(br) {
+    while (!br.champion) {
+      const cur = br.rounds[br.rounds.length - 1];
+      if (cur.some((s) => !s.winner)) return;
+      if (cur.length === 1) { br.champion = cur[0].winner; return; }
+      const next = [], r = br.rounds.length;
+      for (let i = 0; i < cur.length; i += 2) {
+        let a = cur[i].winner, b = cur[i + 1].winner;
+        if (br.seeds.indexOf(b) < br.seeds.indexOf(a)) [a, b] = [b, a];
+        next.push(mkSeries(a, b, bestOfFor(br.R - 1 - r + br.extra)));
+      }
+      br.rounds.push(next);
+    }
+  }
   function endRegularSeason() {
-    const st = standings();
-    const seeds = st.slice(0, 8).map((t) => t.id);
-    S.seasonSeeds = st.map((t) => t.id);
-    log(`Regular season complete. ${teamName(st[0].id)} finish first at ${st[0].w}-${st[0].l}.`);
-    const mk = (a, b, bestOf) => ({ hi: a, lo: b, bestOf, wh: 0, wl: 0, games: [], winner: null });
-    S.playoffs = {
-      seeds,
-      rounds: [[mk(seeds[0], seeds[7], 3), mk(seeds[3], seeds[4], 3), mk(seeds[1], seeds[6], 3), mk(seeds[2], seeds[5], 3)]],
-      bestOf: [3, 5, 7], champion: null,
-    };
+    const r = S.rules, confs = activeConfs();
+    const all = standings();
+    S.seasonOrder = all.map((t) => t.fid);
+    const brackets = [];
+    if (r.seeding === "conference" && confs.length > 1) {
+      const per = Math.max(1, Math.round(r.playoffTeams / confs.length));
+      const extra = Math.ceil(Math.log2(confs.length));
+      for (const c of confs) brackets.push(mkBracket(`${c}`, standings(c).slice(0, per).map((t) => t.fid), extra));
+    } else brackets.push(mkBracket("Playoffs", all.slice(0, Math.min(r.playoffTeams, all.length)).map((t) => t.fid), 0));
+    S.playoffs = { brackets, final: null, champion: null, qualified: brackets.flatMap((b) => b.seeds) };
+    checkPlayoffProgress();
     S.awards = computeAwards();
     S.phase = "playoffs";
-    const ut = S.userTeam;
-    log(seeds.includes(ut) ? `You're in: the ${teamName(ut)} are the #${seeds.indexOf(ut) + 1} seed.` : `The ${teamName(ut)} missed the playoffs.`, ut);
+    log(`Regular season over. ${teamName(all[0].fid)} finish with the best record, ${all[0].w}-${all[0].l}.`);
   }
-
+  function checkPlayoffProgress() {
+    const po = S.playoffs;
+    po.brackets.forEach(advanceBracket);
+    if (po.brackets.length === 1) { if (po.brackets[0].champion) finishPlayoffs(po.brackets[0]); return; }
+    if (!po.final && po.brackets.every((b) => b.champion)) {
+      const champs = po.brackets.map((b) => b.champion).sort((a, b) => S.seasonOrder.indexOf(a) - S.seasonOrder.indexOf(b));
+      po.final = mkBracket("Finals", champs, 0);
+    }
+    if (po.final) { advanceBracket(po.final); if (po.final.champion) finishPlayoffs(po.final); }
+  }
+  function finishPlayoffs(br) {
+    const po = S.playoffs; if (po.champion) return;
+    po.champion = br.champion;
+    const last = br.rounds[br.rounds.length - 1][0];
+    po.runnerUp = last ? (last.winner === last.hi ? last.lo : last.hi) : null;
+    po.finalsMvp = finalsMvp(po.champion);
+    T(po.champion).titles++;
+    log(`🏆 The ${teamName(po.champion)} win the ${S.season} championship. Finals MVP: ${P(po.finalsMvp)?.name || "–"}.`, po.champion, "title");
+  }
+  function activeSeries() {
+    const po = S.playoffs, out = [];
+    for (const br of [...po.brackets, po.final].filter(Boolean)) {
+      if (br.champion || !br.rounds.length) continue;
+      for (const s of br.rounds[br.rounds.length - 1]) if (!s.winner) out.push(s);
+    }
+    return out;
+  }
   function simPlayoffGame() {
     const po = S.playoffs; if (!po || po.champion) return false;
-    const round = po.rounds[po.rounds.length - 1];
-    const active = round.filter((s) => !s.winner);
-    if (!active.length) { advancePlayoffRound(); return true; }
-    for (const s of active) {
-      const gnum = s.games.length;
-      // 2-2-1-1-1 style: higher seed hosts games 1,2,5,7 (bo3: 1,3)
-      const hiHome = s.bestOf === 3 ? gnum !== 1 : [0, 1, 4, 6].includes(gnum);
+    const act = activeSeries();
+    for (const s of act) {
+      const g = s.games.length;
+      const hiHome = s.bestOf === 1 ? true : s.bestOf === 3 ? g !== 1 : [0, 1, 4, 6].includes(g);
       const home = hiHome ? s.hi : s.lo, away = hiHome ? s.lo : s.hi;
-      const box = simGame(home, away, { gid: `po${S.season}-${s.hi}-${s.lo}-${gnum + 1}` });
-      S.boxes[box.gid] = box;
-      applyBox(box, true);
-      const hiWon = (home === s.hi) === (box.hs > box.as);
-      if (hiWon) s.wh++; else s.wl++;
-      s.games.push({ home, away, hs: box.hs, as: box.as, gid: box.gid });
+      const b = simGame(home, away, { gid: `po${S.season}-${s.hi}-${s.lo}-${g + 1}` });
+      S.boxes[b.gid] = b; applyBox(b, true);
+      if ((home === s.hi) === (b.hs > b.as)) s.wh++; else s.wl++;
+      s.games.push({ home, away, hs: b.hs, as: b.as, gid: b.gid });
       const need = Math.ceil(s.bestOf / 2);
-      if (s.wh === need || s.wl === need) {
-        s.winner = s.wh === need ? s.hi : s.lo;
-        const loser = s.winner === s.hi ? s.lo : s.hi;
-        log(`${teamName(s.winner)} beat the ${teamName(loser)} ${Math.max(s.wh, s.wl)}-${Math.min(s.wh, s.wl)}.`, s.winner);
-      }
+      if (s.wh === need || s.wl === need) { s.winner = s.wh === need ? s.hi : s.lo; log(`${teamName(s.winner)} beat the ${teamName(s.winner === s.hi ? s.lo : s.hi)} ${Math.max(s.wh, s.wl)}-${Math.min(s.wh, s.wl)}.`, s.winner); }
     }
-    healDay(new Set(active.flatMap((s) => [s.hi, s.lo])));
-    if (!round.some((s) => !s.winner)) advancePlayoffRound();
+    healDay(new Set(act.flatMap((s) => [s.hi, s.lo])));
+    checkPlayoffProgress();
     return true;
   }
-  function advancePlayoffRound() {
-    const po = S.playoffs;
-    const round = po.rounds[po.rounds.length - 1];
-    const winners = round.map((s) => s.winner);
-    if (winners.length === 1) {
-      po.champion = winners[0];
-      const fin = round[0];
-      po.runnerUp = fin.winner === fin.hi ? fin.lo : fin.hi;
-      po.finalsMvp = finalsMvp(po.champion);
-      log(`🏆 The ${teamName(po.champion)} are the ${S.season} WNBA champions! Finals MVP: ${P(po.finalsMvp)?.name}.`, po.champion);
-      return;
-    }
-    const seedOf = (id) => po.seeds.indexOf(id);
-    const next = [];
-    for (let i = 0; i < winners.length; i += 2) {
-      let [a, b] = [winners[i], winners[i + 1]];
-      if (seedOf(b) < seedOf(a)) [a, b] = [b, a];
-      next.push({ hi: a, lo: b, bestOf: po.bestOf[po.rounds.length], wh: 0, wl: 0, games: [], winner: null });
-    }
-    po.rounds.push(next);
-  }
-  function simPlayoffs(untilEnd) {
+  function simPlayoffs(mode) {
     if (S.phase !== "playoffs") return;
-    if (untilEnd) { let guard = 0; while (!S.playoffs.champion && guard++ < 50) simPlayoffGame(); }
-    else {
-      const startRounds = S.playoffs.rounds.length;
-      let guard = 0;
-      while (!S.playoffs.champion && S.playoffs.rounds.length === startRounds && guard++ < 10) simPlayoffGame();
-    }
-    save(); emit();
+    let guard = 0;
+    if (mode === "all") while (!S.playoffs.champion && guard++ < 200) simPlayoffGame();
+    else if (mode === "round") {
+      const before = activeSeries();
+      while (!S.playoffs.champion && before.some((s) => !s.winner) && guard++ < 20) simPlayoffGame();
+    } else simPlayoffGame();
+    save();
   }
-  function simPlayoffDay() { if (S.phase === "playoffs") { simPlayoffGame(); save(); emit(); } }
 
   // ---------- awards ----------
   function perGame(p, season = S.season, po = false) {
     const st = (po ? p.po : p.stats)[season];
     if (!st || !st.gp) return null;
     const g = st.gp;
-    return {
-      team: st.team, gp: g, gs: st.gs, min: round1(st.min / g), pts: round1(st.pts / g), reb: round1(st.reb / g), ast: round1(st.ast / g),
-      stl: round1(st.stl / g), blk: round1(st.blk / g), tov: round1(st.tov / g),
-      fg: st.fga ? st.fgm / st.fga : 0, tp: st.tpa ? st.tpm / st.tpa : 0, ft: st.fta ? st.ftm / st.fta : 0,
-      ts: st.fga + st.fta ? st.pts / (2 * (st.fga + 0.44 * st.fta)) : 0,
-    };
+    return { team: st.team, gp: g, gs: st.gs, min: round1(st.min / g), pts: round1(st.pts / g), reb: round1(st.reb / g), ast: round1(st.ast / g),
+      stl: round1(st.stl / g), blk: round1(st.blk / g), tov: round1(st.tov / g), fg: st.fga ? st.fgm / st.fga : 0, tp: st.tpa ? st.tpm / st.tpa : 0,
+      ft: st.fta ? st.ftm / st.fta : 0, ts: st.fga + st.fta ? st.pts / (2 * (st.fga + 0.44 * st.fta)) : 0 };
   }
   function awardScore(p) {
-    const s = perGame(p); if (!s || s.gp < 20) return -1;
+    const s = perGame(p); if (!s || s.gp < S.rules.games * 0.45) return -1;
     const t = T(s.team); const wp = t.w / Math.max(1, t.w + t.l);
-    return s.pts + 1.1 * s.reb + 1.4 * s.ast + 2 * (s.stl + s.blk) - s.tov + (s.ts - 0.54) * 40 + wp * 12;
+    const sc = 87 / leaguePts();
+    return (s.pts * sc) + 1.1 * s.reb + 1.4 * s.ast + 2 * (s.stl + s.blk) - s.tov + (s.ts - 0.54) * 40 + wp * 12;
   }
   function computeAwards() {
     const ps = Object.values(S.players).filter((p) => p.team && perGame(p));
     const by = (f) => ps.filter((p) => f(p) > -1).sort((a, b) => f(b) - f(a));
     const mvp = by(awardScore);
-    const roy = by((p) => (p.exp === 0 ? awardScore(p) : -1));
-    const dpoy = by((p) => { const s = perGame(p); if (!s || s.gp < 20) return -1; return 3 * (s.stl + s.blk) + 0.4 * s.reb + p.r.def * 0.12 + s.min * 0.05; });
-    const a = { mvp: mvp[0]?.id, roy: roy[0]?.id, dpoy: dpoy[0]?.id, allFirst: mvp.slice(0, 5).map((p) => p.id), allSecond: mvp.slice(5, 10).map((p) => p.id) };
-    if (a.mvp) log(`${P(a.mvp).name} is the ${S.season} MVP.`, P(a.mvp).team);
-    if (a.roy) log(`${P(a.roy).name} is the ${S.season} Rookie of the Year.`, P(a.roy).team);
-    if (a.dpoy) log(`${P(a.dpoy).name} is the ${S.season} Defensive Player of the Year.`, P(a.dpoy).team);
+    const roy = by((p) => (isRookie(p) ? awardScore(p) : -1));
+    const dpoy = by((p) => { const s = perGame(p); if (!s || s.gp < S.rules.games * 0.45) return -1; return 3 * (s.stl + s.blk) + 0.4 * s.reb + p.r.def * 0.12 + s.min * 0.05; });
+    const a = { mvp: mvp[0]?.id, roy: roy[0]?.id, dpoy: dpoy[0]?.id, allLeague: mvp.slice(0, 5).map((p) => p.id) };
+    const tag = (id, name) => { if (id) { P(id).awards.push(`${S.season} ${name}`); log(`${P(id).name} (${T(P(id).team).abbr}) wins ${S.season} ${name}.`, P(id).team, "award"); } };
+    tag(a.mvp, "MVP"); tag(a.dpoy, "Defensive Player of the Year"); tag(a.roy, "Rookie of the Year");
+    a.allLeague.forEach((id) => P(id).awards.push(`${S.season} All-League`));
     return a;
   }
-  function finalsMvp(tid) {
-    const ps = roster(tid).filter((p) => p.po[S.season]);
+  const isRookie = (p) => p.firstSeason === S.season || (S.season === S.startYear && p.real && Math.min(...realSeasons(p.id)) === S.season);
+  function finalsMvp(fid) {
+    const ps = roster(fid).filter((p) => p.po[S.season]);
     ps.sort((a, b) => { const x = a.po[S.season], y = b.po[S.season]; return (y.pts + y.reb + y.ast) - (x.pts + x.reb + x.ast); });
     return ps[0]?.id;
   }
 
-  // ---------- offseason ----------
-  // Phases: playoffs(done) -> draft -> resign -> freeagency -> preseason(next season)
-  function advanceToDraft() {
-    if (S.phase !== "playoffs" || !S.playoffs?.champion) return;
-    const po = S.playoffs;
-    const st = standings();
-    S.history.unshift({
-      season: S.season, champion: po.champion, runnerUp: po.runnerUp, finalsMvp: po.finalsMvp, ...S.awards,
-      standings: st.map((t) => ({ id: t.id, w: t.w, l: t.l })),
-      userRecord: { w: T(S.userTeam).w, l: T(S.userTeam).l, seed: po.seeds.indexOf(S.userTeam) + 1 },
-    });
-    // Archive season lines into careers.
-    for (const p of Object.values(S.players)) {
-      const s = perGame(p);
-      if (s) p.career.push({ season: S.season, ...s, ovr: p.r.ovr });
-    }
-    // Draft order: lottery among non-playoff teams, then playoff teams by record (worst first).
-    const nonPO = S.seasonSeeds.slice(8).reverse(); // worst first
-    const weights = [30, 22, 16, 12, 9, 6, 5];
-    const lottery = [];
-    const pool = nonPO.map((id, i) => ({ id, w: weights[i] ?? 3 }));
-    for (let k = 0; k < Math.min(4, pool.length); k++) {
-      const W = sum(pool.map((x) => x.w)); let r = rnd() * W; let idx = 0;
-      while (r > pool[idx].w) { r -= pool[idx].w; idx++; }
-      lottery.push(pool.splice(idx, 1)[0].id);
-    }
-    const order1 = lottery.concat(pool.map((x) => x.id), S.seasonSeeds.slice(0, 8).reverse());
-    const slots = [];
-    for (const rd of [1, 2, 3]) {
-      const ord = rd === 1 ? order1 : S.seasonSeeds.slice().reverse();
-      ord.forEach((orig) => {
-        const pk = S.picks.find((x) => x.season === S.season && x.round === rd && x.orig === orig);
-        slots.push({ round: rd, orig, owner: pk ? pk.owner : orig, player: null });
-      });
-    }
-    slots.forEach((s, i) => (s.pick = i + 1));
-    S.draft = { season: S.season, slots, cur: 0, lottery };
-    log(`Draft lottery: ${teamName(lottery[0])} win the #1 pick.`, lottery[0]);
-    S.phase = "draft";
-    save(); emit();
+  // ---------- history events ----------
+  function queueHistoryEvents(y) {
+    if (!D.teams[y] || !D.teams[y - 1]) return;
+    const prev = Object.fromEntries(D.teams[y - 1].map((t) => [t.fid, t]));
+    const cur = Object.fromEntries(D.teams[y].map((t) => [t.fid, t]));
+    const add = (e) => { if (S.events.some((x) => x.id === `${y}-${e.type}-${e.fid}`)) return; S.events.push({ id: `${y}-${e.type}-${e.fid}`, season: y, approved: true, done: false, ...e }); };
+    for (const fid in cur) if (!prev[fid]) add({ type: "expand", fid, team: cur[fid], text: `${cur[fid].city} ${cur[fid].name} join the league` });
+    for (const fid in prev) if (!cur[fid]) add({ type: "fold", fid, text: `${prev[fid].city} ${prev[fid].name} fold` });
+    for (const fid in cur) if (prev[fid] && (prev[fid].city !== cur[fid].city || prev[fid].name !== cur[fid].name))
+      add({ type: "relocate", fid, team: cur[fid], text: `${prev[fid].city} ${prev[fid].name} become the ${cur[fid].city} ${cur[fid].name}` });
+    const g0 = D.league[y - 1].games, g1 = D.league[y].games;
+    if (g0 !== g1) add({ type: "games", fid: "L", games: g1, text: `Regular season changes from ${g0} to ${g1} games` });
   }
-  const draftOnClock = () => S.draft && S.draft.slots[S.draft.cur];
-  const availableProspects = () => S.prospects.map(P).filter((p) => p && !p.team && p.prospect === S.season);
+  const pendingEvents = () => S.events.filter((e) => e.season === S.season + 1 && !e.done);
+  function setEventApproval(id, ok) { const e = S.events.find((x) => x.id === id); if (e) { e.approved = ok; save(); } }
+  function applyHistoryEvents() {
+    for (const e of pendingEvents()) {
+      e.done = true;
+      if (!e.approved) { log(`Commissioner vetoed: ${e.text} (${e.season}).`, null, "office"); continue; }
+      const t = T(e.fid);
+      if (e.type === "expand") {
+        if (t && t.active) continue;
+        const conf = S.conferences.includes(e.team.conf) ? e.team.conf : smallestConf();
+        expandTeam({ fid: e.fid, abbr: e.team.abbr, city: e.team.city, name: e.team.name, color: e.team.color, conf }, true);
+      } else if (e.type === "fold") { if (t && t.active) foldTeam(e.fid, true); }
+      else if (e.type === "relocate") { if (t && t.active) relocateTeam(e.fid, { city: e.team.city, name: e.team.name, abbr: e.team.abbr, color: e.team.color }, true); }
+      else if (e.type === "games") { S.rules.games = e.games; log(`The regular season is now ${e.games} games.`, null, "office"); }
+    }
+  }
+  const smallestConf = () => S.conferences.slice().sort((a, b) => activeTeams().filter((t) => t.conf === a).length - activeTeams().filter((t) => t.conf === b).length)[0];
 
-  function rookieContract(slot) {
-    const e = S.econ;
-    if (slot.round === 1) {
-      const sal = e.rookieTop - ((slot.pick - 1) * (e.rookieTop - e.min * 1.16)) / 14;
-      return { sal: Math.round(sal / 1000) * 1000, yrs: 4, rookie: true };
+  // ---------- commissioner powers ----------
+  const officeOpen = () => S.phase === "preseason" || S.phase === "offseason";
+  function setRules(patch) {
+    const r = { ...(S.phase === "regular" || S.phase === "playoffs" ? (S.rulesNext || S.rules) : S.rules), ...patch };
+    const n = activeTeams().length;
+    r.playoffTeams = clamp(Math.round(r.playoffTeams), 2, Math.max(2, n));
+    r.games = clamp(Math.round(r.games), 4, 100);
+    r.rosterMin = clamp(Math.round(r.rosterMin), 8, 20); r.rosterMax = clamp(Math.round(r.rosterMax), r.rosterMin, 20);
+    r.draftRounds = clamp(Math.round(r.draftRounds), 0, 6);
+    r.lotteryTeams = clamp(Math.round(r.lotteryTeams), 0, n); r.lotteryPicks = clamp(Math.round(r.lotteryPicks), 0, r.lotteryTeams);
+    if (S.phase === "regular" || S.phase === "playoffs") { S.rulesNext = r; log("Rule changes approved. They take effect next season.", null, "office"); }
+    else { S.rules = r; log("Rule changes are in effect.", null, "office"); }
+    save();
+  }
+  function addConference(name) {
+    name = String(name || "").trim(); if (!name || S.conferences.includes(name)) return { ok: false, msg: "Pick a new, non-empty conference name." };
+    S.conferences.push(name); log(`New conference created: ${name}.`, null, "office"); save(); return { ok: true };
+  }
+  function renameConference(old, name) {
+    name = String(name || "").trim(); if (!name || S.conferences.includes(name)) return { ok: false, msg: "That name is empty or taken." };
+    S.conferences = S.conferences.map((c) => (c === old ? name : c));
+    S.teams.forEach((t) => { if (t.conf === old) t.conf = name; });
+    log(`The ${old} conference is renamed ${name}.`, null, "office"); save(); return { ok: true };
+  }
+  function removeConference(c) {
+    if (S.conferences.length <= 1) return { ok: false, msg: "The league needs at least one conference." };
+    S.conferences = S.conferences.filter((x) => x !== c);
+    S.teams.forEach((t) => { if (t.conf === c) t.conf = smallestConf(); });
+    log(`The ${c} conference is dissolved; its teams were moved.`, null, "office"); save(); return { ok: true };
+  }
+  function setTeamConf(fid, c) { if (!officeOpen()) return; T(fid).conf = c; log(`${teamName(fid)} move to the ${c} conference.`, fid, "office"); save(); }
+
+  function expandTeam(info, fromHistory) {
+    if (!fromHistory && !officeOpen()) return { ok: false, msg: "Expansion is only allowed in the preseason or offseason." };
+    const abbr = String(info.abbr || "").trim().toUpperCase().slice(0, 3);
+    if (!info.city || !info.name || abbr.length < 2) return { ok: false, msg: "Give the team a city, a nickname and a 2-3 letter abbreviation." };
+    if (activeTeams().some((t) => t.abbr === abbr)) return { ok: false, msg: `${abbr} is already used by an active team.` };
+    let t = info.fid && T(info.fid);
+    if (t) Object.assign(t, { active: true, city: info.city, name: info.name, abbr, color: info.color || t.color, conf: info.conf, w: 0, l: 0, hw: 0, hl: 0, pf: 0, pa: 0, streak: 0, revived: S.season });
+    else { t = mkTeam({ fid: info.fid || `X${S.nextFid++}`, abbr, city: info.city, name: info.name, color: info.color, conf: info.conf || smallestConf() }, S.season + (S.phase === "offseason" ? 1 : 0)); t.expansion = true; S.teams.push(t); }
+    t.expansionYear = S.season + (S.phase === "offseason" ? 1 : 0);
+    log(`${fromHistory ? "" : "Commissioner approves expansion: "}the ${t.city} ${t.name} join the league in ${t.expansionYear}.`, t.fid, "office");
+    expansionDraft(t.fid);
+    rankCache = null; save();
+    return { ok: true, fid: t.fid };
+  }
+  function expansionDraft(fid) {
+    const protectN = S.rules.expansionProtect;
+    const pool = [];
+    for (const t of activeTeams()) {
+      if (t.fid === fid) continue;
+      const ps = roster(t.fid).sort((a, b) => playerValue(b, t.fid) - playerValue(a, t.fid));
+      ps.slice(protectN).forEach((p) => pool.push(p));
     }
-    return { sal: e.min, yrs: 2, rookie: true, nonGuaranteed: true };
-  }
-  function draftPlayer(pid) {
-    const slot = draftOnClock(); if (!slot) return;
-    const p = P(pid);
-    p.team = slot.owner; p.c = rookieContract(slot); p.prospect = null; p.exp = 0;
-    p.acq = `#${slot.pick} pick in ${S.season} draft`;
-    p.draftInfo = { season: S.season, pick: slot.pick, round: slot.round, team: slot.owner };
-    slot.player = pid;
-    if (slot.round === 1 || slot.owner === S.userTeam) log(`Pick ${slot.pick}: ${teamName(slot.owner)} select ${p.name} (${p.school}).`, slot.owner);
-    S.draft.cur++;
-    if (S.draft.cur >= S.draft.slots.length) finishDraft();
-  }
-  function aiDraftChoice(tid) {
-    const mode = teamMode(tid);
-    const av = availableProspects();
-    av.sort((a, b) => {
-      const va = a.r.ovr * (mode === "contend" ? 0.65 : 0.45) + a.r.pot * (mode === "contend" ? 0.35 : 0.55) + randn() * 2;
-      const vb = b.r.ovr * (mode === "contend" ? 0.65 : 0.45) + b.r.pot * (mode === "contend" ? 0.35 : 0.55) + randn() * 2;
-      return vb - va;
-    });
-    return av[0]?.id;
-  }
-  // Auto-pick until it's the user's turn (or the draft ends).
-  function draftUntilUser(includeUser) {
-    let guard = 0;
-    while (S.phase === "draft" && draftOnClock() && guard++ < 100) {
-      const slot = draftOnClock();
-      if (slot.owner === S.userTeam && !includeUser) break;
-      const pid = aiDraftChoice(slot.owner);
-      if (!pid) { S.draft.cur++; continue; }
-      draftPlayer(pid);
+    const target = Math.min(activeTeams().length - 1, S.rules.rosterMin);
+    const taken = new Set(); const picks = [];
+    pool.sort((a, b) => playerValue(b, fid) - playerValue(a, fid));
+    for (const p of pool) {
+      if (picks.length >= target) break;
+      if (taken.has(p.team)) continue;
+      taken.add(p.team); picks.push(p);
+      txn(`Expansion draft: ${teamName(fid)} select ${p.name} from the ${teamName(p.team)}.`, fid);
+      p.team = fid; p.acq = `Expansion draft ${S.season}`;
     }
-    save(); emit();
+    log(`Expansion draft: the ${teamName(fid)} take ${picks.length} players${picks[0] ? `, led by ${picks.sort((a, b) => b.r.ovr - a.r.ovr)[0].name}` : ""}.`, fid, "office");
   }
-  function userDraft(pid) {
-    const slot = draftOnClock();
-    if (!slot || slot.owner !== S.userTeam) return;
-    draftPlayer(pid); save(); emit();
+  function relocateTeam(fid, info, fromHistory) {
+    if (!fromHistory && !officeOpen()) return { ok: false, msg: "Relocation is only allowed in the preseason or offseason." };
+    const t = T(fid); const old = `${t.city} ${t.name}`;
+    const abbr = String(info.abbr || t.abbr).trim().toUpperCase().slice(0, 3);
+    if (activeTeams().some((x) => x.abbr === abbr && x.fid !== fid)) return { ok: false, msg: `${abbr} is already used.` };
+    Object.assign(t, { city: info.city || t.city, name: info.name || t.name, abbr, color: info.color || t.color });
+    t.renames = (t.renames || []).concat([{ season: S.season, from: old }]);
+    log(`${fromHistory ? "" : "Commissioner approves: "}the ${old} become the ${t.city} ${t.name}.`, fid, "office");
+    save(); return { ok: true };
   }
-  function finishDraft() {
-    // Undrafted prospects become free agents.
-    for (const p of availableProspects()) { p.prospect = null; p.ask = { sal: S.econ.min, yrs: 1 }; }
-    S.picks = S.picks.filter((x) => x.season !== S.season);
-    addPicksFor(S.season + 2);
-    S.phase = "resign";
-    // Expiring contracts: yrs counts seasons remaining including the one just played.
-    for (const p of Object.values(S.players)) if (p.team && !p.retired) {
-      if (p.c.yrs <= 1 && !(p.draftInfo && p.draftInfo.season === S.season)) {
-        p.expiring = true; p.ask = askingContract(p); p.mood = 0.85 + rnd() * 0.3;
+  function foldTeam(fid, fromHistory) {
+    if (!fromHistory && !officeOpen()) return { ok: false, msg: "Teams can only fold in the preseason or offseason." };
+    if (activeTeams().length <= 2) return { ok: false, msg: "The league needs at least two teams." };
+    const t = T(fid); t.active = false; t.folded = S.season;
+    const pool = roster(fid).sort((a, b) => b.r.ovr - a.r.ovr);
+    pool.forEach((p) => (p.team = null));
+    log(`${fromHistory ? "" : "Commissioner's decision: "}the ${t.city} ${t.name} fold. Their ${pool.length} players go to a dispersal draft.`, fid, "office");
+    // Dispersal draft: worst teams pick first; teams pass when the player wouldn't help.
+    const order = standings().reverse().map((x) => x.fid);
+    let round = 0, any = true;
+    while (pool.some((p) => !p.team) && any && round < 5) {
+      any = false; round++;
+      for (const tf of order) {
+        const avail = pool.filter((p) => !p.team);
+        if (!avail.length) break;
+        const ros = roster(tf);
+        const worst = ros.length ? Math.min(...ros.map((p) => p.r.ovr)) : 0;
+        const best = avail.sort((a, b) => playerValue(b, tf) - playerValue(a, tf))[0];
+        if (ros.length < S.rules.rosterMax || best.r.ovr > worst + 3) {
+          if (ros.length >= S.rules.rosterMax) { const cut = ros.sort((a, b) => a.r.ovr - b.r.ovr)[0]; releaseToFA(cut, tf); }
+          best.team = tf; best.acq = `Dispersal draft ${S.season}`; any = true;
+          txn(`Dispersal draft: ${teamName(tf)} take ${best.name}.`, tf);
+        }
       }
     }
-    log(`The ${S.season} draft is complete. Teams now decide on their expiring contracts.`);
+    pool.filter((p) => !p.team).forEach((p) => { p.c = { sal: 0, yrs: 0 }; p.ask = askingContract(p); });
+    rankCache = null; save(); return { ok: true };
+  }
+  function releaseToFA(p, fid) { p.team = null; p.c = { sal: 0, yrs: 0 }; p.ask = askingContract(p); txn(`${teamName(fid)} waive ${p.name}.`, fid); }
+
+  // ---------- offseason ----------
+  function toOffseason() {
+    if (S.phase !== "playoffs" || !S.playoffs.champion) return;
+    const po = S.playoffs;
+    const realBest = D.teams[S.season] ? D.teams[S.season].slice().sort((a, b) => b.w / (b.w + b.l) - a.w / (a.w + a.l))[0] : null;
+    S.history.unshift({ season: S.season, champion: po.champion, champName: teamName(po.champion), runnerUp: po.runnerUp, runnerName: teamName(po.runnerUp), finalsMvp: po.finalsMvp, ...S.awards,
+      best: S.seasonOrder[0], bestRec: `${T(S.seasonOrder[0]).w}-${T(S.seasonOrder[0]).l}`, teams: activeTeams().length,
+      real: realBest ? { team: `${realBest.city} ${realBest.name}`, rec: `${realBest.w}-${realBest.l}` } : null });
+    // team histories
+    const reached = {};
+    const allBr = [...po.brackets, po.final].filter(Boolean);
+    for (const br of allBr) br.rounds.forEach((rd) => rd.forEach((s) => { for (const f of [s.hi, s.lo]) if (f) reached[f] = Math.max(reached[f] || 0, 1); }));
+    for (const t of activeTeams()) {
+      const res = t.fid === po.champion ? "Champion" : t.fid === po.runnerUp ? "Finals" : po.qualified.includes(t.fid) ? "Playoffs" : "–";
+      t.hist.push({ season: S.season, name: `${t.city} ${t.name}`, abbr: t.abbr, w: t.w, l: t.l, res, conf: t.conf });
+    }
+    for (const p of Object.values(S.players)) { const s = perGame(p); if (s) p.career.push({ season: S.season, ...s, ovr: p.r.ovr }); }
+    S.phase = "offseason";
+    if (S.opts.followHistory) queueHistoryEvents(S.season + 1);
+    log(`The offseason begins. The commissioner's office is open.`, null, "office");
+    save();
   }
 
-  function resignPlayer(pid) {
-    const p = P(pid);
-    if (!p.expiring || p.team !== S.userTeam) return { ok: false };
-    p.resign = true; p.expiring = false;
-    p.c = { sal: p.ask.sal, yrs: p.ask.yrs + 1, rookie: false }; // +1 because the old season rolls off at advance
-    log(`${teamName(S.userTeam)} re-sign ${p.name}: ${fmtMoney(p.ask.sal)} x ${p.ask.yrs}.`, S.userTeam);
-    save(); emit();
+  // Run everything between seasons: history events, draft, re-signings, free agency, development.
+  function advanceToNextSeason() {
+    if (S.phase !== "offseason") return { ok: false };
+    if (S.opts.followHistory) applyHistoryEvents();
+    runDraft();
+    contractsAndFreeAgency();
+    S.season++;
+    if (S.rulesNext) { S.rules = S.rulesNext; S.rulesNext = null; }
+    S.rules.cap = Math.round(S.rules.cap * (1 + S.rules.capGrowth) / 5000) * 5000;
+    if (S.opts.followHistory && S.season === 2026 && S.rules.cap < 7e6) { S.rules.cap = 7e6; log("The 2026 CBA resets the salary cap to $7.0M.", null, "office"); }
+    for (const p of Object.values(S.players)) if (p.inj) { p.inj = 0; p.injType = null; }
+    develop();
+    retirements();
+    for (const p of freeAgents()) p.ask = askingContract(p);
+    aiFreeAgency(1); aiFreeAgency(1);
+    aiTrades(3);
+    for (const t of activeTeams()) { Object.assign(t, { w: 0, l: 0, hw: 0, hl: 0, pf: 0, pa: 0, streak: 0 }); aiRosterFix(t.fid); t.dead = t.dead.filter((d) => d.season >= S.season); }
+    S.playoffs = null; S.awards = null; S.boxes = {}; S.schedule = []; S.day = 0;
+    pruneSave();
+    S.phase = "preseason";
+    log(`Welcome to the ${S.season} preseason: ${activeTeams().length} teams, ${S.rules.games} games, ${S.rules.playoffTeams} playoff spots.`, null, "office");
+    save();
     return { ok: true };
   }
-  function letGo(pid) { const p = P(pid); if (p.team === S.userTeam && p.expiring) { p.declined = true; save(); emit(); } }
 
-  function advanceToFreeAgency() {
-    if (S.phase !== "resign") return;
-    // AI decisions on expiring players.
-    for (const p of Object.values(S.players)) {
-      if (!p.team || !p.expiring) continue;
-      if (p.team === S.userTeam) {
-        if (!p.resign) toFreeAgency(p);
-        continue;
+  // Draft: real players whose WNBA debut is next season enter, plus generated prospects.
+  function draftClass(y) {
+    const out = [];
+    if (y <= LAST_REAL) {
+      for (const rp of D.players) {
+        if (!rp.s[y] || S.players[rp.id]) continue;
+        const ss = Object.keys(rp.s).map(Number); const first = Math.min(...ss);
+        const p = mkRealPlayer(rp, y);
+        if (first !== y) { p.ask = askingContract(p); S.players[p.id] = p; continue; } // returning veteran: free agent
+        p.firstSeason = y;
+        // Rookies arrive a little below their first-season level; their real arc does the rest.
+        if (S.opts.realCareers) p.r.ovr = Math.max(35, p.r.ovr - 1);
+        p.prospect = y; p.born = rp.born; S.players[p.id] = p;
+        const viaDraft = rp.dy && rp.dy >= y - 2;
+        if (viaDraft) out.push(p.id); else { p.prospect = null; p.ask = askingContract(p); }
       }
-      const keep = (p.r.ovr >= 60 || (p.age <= 25 && p.r.pot >= 65)) && rnd() < 0.7 && p.age <= 33;
-      if (keep) { p.c = { sal: p.ask.sal, yrs: p.ask.yrs + 1, rookie: false }; p.expiring = false; }
-      else toFreeAgency(p);
     }
-    // Season rolls: contracts tick down, players age and develop, some retire.
-    for (const p of Object.values(S.players)) {
-      if (p.retired) continue;
-      const justDrafted = p.draftInfo && p.draftInfo.season === S.season;
-      if (p.team && !justDrafted) p.c.yrs = Math.max(0, p.c.yrs - 1);
-      p.expiring = false; p.resign = false; p.declined = false;
+    const need = Math.max(0, activeTeams().length * S.rules.draftRounds + 8 - out.length);
+    for (let i = 0; i < need; i++) {
+      const a = 20 + Math.floor(rnd() * 4);
+      // While real draft classes exist (through 2026) generated players only fill the lower slots.
+      const tier = y <= LAST_REAL ? (i < 5 ? 50 : i < 20 ? 45 : 41) : (i < 3 ? 62 : i < 10 ? 55 : i < 25 ? 48 : 43);
+      const p = genPlayer({ age: a, ovrMean: tier, ovrSd: 4.5, potRoom: Math.max(3, (25 - a) * 3.5 + (i < 10 ? 5 : 0)), draft: true });
+      p.prospect = y; p.firstSeason = y; S.players[p.id] = p; out.push(p.id);
     }
-    progressPlayers();
-    retirements();
-    S.season++;
-    for (const k of ["cap", "max", "min", "rookieTop"]) S.econ[k] = Math.round((S.econ[k] * (1 + S.econ.growth)) / 5000) * 5000;
-    for (const t of S.teams) { t.dead = t.dead.filter((d) => d.season >= S.season); }
-    S.prospects = genProspects(S.season);
-    S.phase = "freeagency"; S.faDay = 0;
-    for (const p of freeAgents()) p.ask = askingContract(p);
-    log(`Free agency is open. The ${S.season} salary cap is ${fmtMoney(S.econ.cap)}.`);
-    save(); emit();
+    return out;
   }
-  function toFreeAgency(p) {
-    const from = p.team;
-    p.team = null; p.c = { sal: 0, yrs: 0, rookie: false }; p.expiring = false;
-    p.ask = askingContract(p);
-    if (p.r.ovr >= 68) log(`${p.name} hits free agency after leaving the ${teamName(from)}.`, from);
+  function runDraft() {
+    const y = S.season + 1;
+    const cls = draftClass(y);
+    const R = S.rules.draftRounds;
+    if (!R) { finishDraftClass(cls); return; }
+    const teams = activeTeams();
+    const recOrder = teams.slice().sort((a, b) => (a.w / Math.max(1, a.w + a.l)) - (b.w / Math.max(1, b.w + b.l))).map((t) => t.fid);
+    const newT = teams.filter((t) => t.expansionYear === y).map((t) => t.fid);
+    let base = recOrder.filter((f) => !newT.includes(f));
+    let order1 = base;
+    if (S.rules.lottery && S.rules.lotteryTeams > 0) {
+      const nonPO = base.filter((f) => !lastQualified().includes(f));
+      const pool = nonPO.slice(0, S.rules.lotteryTeams).map((f, i) => ({ f, w: Math.max(1, S.rules.lotteryTeams - i) ** 1.5 }));
+      const won = [];
+      for (let k = 0; k < Math.min(S.rules.lotteryPicks, pool.length); k++) {
+        const W = sum(pool.map((x) => x.w)); let r = rnd() * W, i = 0;
+        while (r > pool[i].w) { r -= pool[i].w; i++; }
+        won.push(pool.splice(i, 1)[0].f);
+      }
+      order1 = won.concat(base.filter((f) => !won.includes(f)));
+      if (won[0]) log(`Draft lottery: the ${teamName(won[0])} win the #1 pick.`, won[0], "draft");
+    }
+    const slots = [];
+    for (let r = 1; r <= R; r++) (newT.concat(r === 1 ? order1 : base)).forEach((f) => slots.push({ round: r, fid: f }));
+    const picks = [];
+    slots.forEach((s, i) => {
+      const av = cls.map(P).filter((p) => p.prospect === y);
+      if (!av.length) return;
+      const mode = teamMode(s.fid);
+      const val = (p) => (p.r.ovr * (mode === "contend" ? 0.6 : 0.45) + p.r.pot * (mode === "contend" ? 0.4 : 0.55)) + randn() * 3;
+      const ch = av.map((p) => [p, val(p)]).sort((a, b) => b[1] - a[1])[0][0];
+      ch.prospect = null; ch.team = s.fid; ch.draft = { season: y, round: s.round, pick: i + 1, team: s.fid };
+      ch.c = rookieContract(i + 1, s.round); ch.acq = `#${i + 1} pick, ${y} draft`;
+      picks.push({ pick: i + 1, round: s.round, fid: s.fid, pid: ch.id });
+      if (i < 3) log(`${y} draft, pick ${i + 1}: the ${teamName(s.fid)} select ${ch.name}${ch.real ? "" : " (generated)"}.`, s.fid, "draft");
+    });
+    S.lastDraft = { season: y, picks };
+    finishDraftClass(cls);
+    // Rookies push rosters over the max; teams trim later in aiRosterFix.
   }
-  function progressPlayers() {
-    const curve = (age) => age <= 21 ? 3 : age <= 22 ? 2.6 : age <= 23 ? 2.2 : age <= 24 ? 1.6 : age <= 25 ? 1.0 : age <= 26 ? 0.6 : age <= 27 ? 0.3 : age <= 28 ? 0 : age <= 29 ? -0.6 : age <= 30 ? -1.1 : age <= 31 ? -1.7 : age <= 32 ? -2.4 : age <= 33 ? -3 : -4;
+  const lastQualified = () => (S.playoffs ? S.playoffs.qualified : []);
+  function finishDraftClass(cls) { cls.map(P).filter((p) => p.prospect).forEach((p) => { p.prospect = null; p.ask = { sal: econ().min, yrs: 1 }; if (!p.real) p.undrafted = true; }); }
+  function rookieContract(pick, round) {
+    const e = econ();
+    if (round === 1) return { sal: Math.round((e.min * 1.9 - ((pick - 1) / 14) * e.min * 0.8) / 1000) * 1000, yrs: 4, rookie: true };
+    return { sal: Math.round(e.min / 1000) * 1000, yrs: 2, rookie: true, nonGuaranteed: true };
+  }
+  function contractsAndFreeAgency() {
+    // Contracts tick down; expiring players are re-signed or released by their (AI) team.
     for (const p of Object.values(S.players)) {
-      if (p.retired) continue;
-      p.age++;
-      if (p.stats[S.season]) p.exp = (p.exp || 0) + 1;
-      let d = curve(p.age) + randn() * 2.4;
-      if (p.age <= 26 && p.r.pot > p.r.ovr) d += (p.r.pot - p.r.ovr) * 0.1;
+      if (!p.team || p.retired) continue;
+      if (p.draft && p.draft.season === S.season + 1) continue; // just drafted
+      p.c.yrs--;
+      if (p.c.yrs > 0) continue;
+      const fid = p.team, keep = (p.r.ovr >= 58 || (age(p) <= 25 && p.r.pot >= 65)) && age(p) <= 34 && rnd() < 0.72;
+      if (keep) { const a = askingContract(p); p.c = { sal: a.sal, yrs: a.yrs }; }
+      else { p.team = null; p.c = { sal: 0, yrs: 0 }; if (p.r.ovr >= 70) log(`${p.name} becomes a free agent, leaving the ${teamName(fid)}.`, fid, "fa"); }
+    }
+  }
+  function develop() {
+    const curve = (a) => a <= 21 ? 3 : a <= 22 ? 2.6 : a <= 23 ? 2.2 : a <= 24 ? 1.6 : a <= 25 ? 1 : a <= 26 ? 0.6 : a <= 27 ? 0.2 : a <= 28 ? 0 : a <= 29 ? -0.6 : a <= 30 ? -1.1 : a <= 31 ? -1.7 : a <= 32 ? -2.4 : a <= 33 ? -3 : -4;
+    for (const p of Object.values(S.players)) {
+      if (p.retired || p.prospect) continue;
       const old = p.r.ovr;
-      p.r.ovr = Math.round(clamp(p.r.ovr + d, 30, 99));
-      const dd = p.r.ovr - old;
-      for (const k of ["ins", "thr", "fts", "ply", "reb", "def", "ath"]) {
-        const f = k === "ath" ? (p.age >= 29 ? 1.5 : 0.8) : 0.6 + rnd() * 0.8;
-        p.r[k] = Math.round(clamp(p.r[k] + dd * f + randn(), 20, 99));
+      const real = S.opts.realCareers && p.real ? realRatings(p.id, S.season) : null;
+      if (S.opts.realCareers && p.real && !real && S.season <= LAST_REAL && realSeasons(p.id).some((x) => x > S.season) && age(p) < 33) {
+        p.inj = 999; p.injType = "sitting out the season"; // she missed this season in real life
       }
-      p.r.pot = p.age >= 28 ? p.r.ovr : Math.round(clamp(Math.max(p.r.ovr, p.r.pot + randn() * 2), p.r.ovr, 99));
-      if (p.team === S.userTeam && Math.abs(dd) >= 4) log(`${p.name} ${dd > 0 ? "improved" : "declined"} ${dd > 0 ? "+" : ""}${dd} over the offseason (now ${p.r.ovr}).`, S.userTeam);
+      if (real) {
+        // Follow the real career: that season's rating, with a little variation.
+        const n = Math.round(randn() * 1.5);
+        for (const k of ["ovr", ...SKILLS]) p.r[k] = clamp(real[k] + n, 25, 99);
+        const peak = realPeakFrom(p.id, S.season);
+        p.r.pot = Math.max(p.r.ovr, peak ?? p.r.ovr);
+      } else {
+        const a = age(p);
+        let d = curve(a) + randn() * 2.4;
+        if (a <= 26 && p.r.pot > p.r.ovr) d += (p.r.pot - p.r.ovr) * 0.1;
+        p.r.ovr = Math.round(clamp(p.r.ovr + d, 30, 99));
+        const dd = p.r.ovr - old;
+        for (const k of SKILLS) p.r[k] = Math.round(clamp(p.r[k] + dd * (k === "ath" ? (a >= 29 ? 1.5 : 0.8) : 0.6 + rnd() * 0.8) + randn(), 20, 99));
+        p.r.pot = a >= 28 ? p.r.ovr : Math.round(clamp(Math.max(p.r.ovr, p.r.pot + randn() * 2), p.r.ovr, 99));
+      }
     }
   }
   function retirements() {
     for (const p of Object.values(S.players)) {
       if (p.retired || p.prospect) continue;
+      const a = age(p);
       let pr = 0;
-      if (p.age >= 35) pr = 0.35 + (p.age - 35) * 0.15;
-      else if (p.age >= 32) pr = p.r.ovr < 60 ? 0.3 : 0.05;
-      if (!p.team && p.age >= 29 && p.r.ovr < 50) pr += 0.4;
-      if (p.team && p.c.yrs > 0) pr *= 0.3; // under contract: usually plays it out
+      if (p.real && S.opts.realCareers) {
+        const ss = realSeasons(p.id), lastS = Math.max(...ss);
+        if (S.season > lastS && lastS < LAST_REAL) pr = S.season > lastS + 1 ? 0.9 : 0.7; // retired in real life
+        else if (S.season <= LAST_REAL && !realLine(p.id, S.season) && a >= 33) pr = 0.6; // stepped away in real life
+        else if (S.season > LAST_REAL) pr = a >= 35 ? 0.35 + (a - 35) * 0.15 : a >= 32 && p.r.ovr < 60 ? 0.3 : 0.03;
+      } else {
+        if (a >= 35) pr = 0.35 + (a - 35) * 0.15; else if (a >= 32) pr = p.r.ovr < 60 ? 0.3 : 0.05;
+        if (!p.team && a >= 29 && p.r.ovr < 50) pr += 0.4;
+        if (p.team && p.c.yrs > 0) pr *= 0.4;
+      }
+      if (!p.team && p.undrafted && rnd() < 0.5) pr = 1;
       if (rnd() < pr) {
-        p.retired = S.season;
-        if (p.r.ovr >= 65 || p.team === S.userTeam) log(`${p.name} has retired after ${p.exp} seasons.`, p.team);
-        p.team = null;
+        const fid = p.team;
+        p.retired = S.season; p.team = null;
+        if (p.r.ovr >= 70 || p.awards.length) log(`${p.name} retires${fid ? ` from the ${teamName(fid)}` : ""}.`, fid, "retire");
       }
     }
   }
-
-  // ---------- free agency ----------
-  function offerContract(pid, sal, yrs) {
-    const p = P(pid), ut = S.userTeam;
-    if (!p || p.team) return { ok: false, msg: "That player is no longer available." };
-    if (roster(ut).length >= S.econ.rosterMax) return { ok: false, msg: `Your roster is full (${S.econ.rosterMax}). Release someone first.` };
-    sal = Math.round(clamp(sal, S.econ.min, S.econ.max));
-    const minException = sal <= S.econ.min && roster(ut).length < S.econ.rosterMin;
-    if (payroll(ut) + sal > S.econ.cap && !minException) return { ok: false, msg: `That offer puts you ${fmtMoney(payroll(ut) + sal - S.econ.cap)} over the hard cap.` };
-    const ask = p.ask || askingContract(p);
-    // Players weigh salary most, but like contenders and years that match their ask.
-    const contender = 1 + (8 - projectedRank(ut)) * 0.006;
-    const yrsFit = 1 - Math.abs(yrs - ask.yrs) * 0.03;
-    const score = (sal / ask.sal) * contender * yrsFit;
-    if (score < 0.97) {
-      return { ok: false, msg: `${p.name} turned it down. She's looking for about ${fmtMoney(ask.sal)} over ${ask.yrs} year${ask.yrs > 1 ? "s" : ""}.` };
-    }
-    p.team = ut; p.c = { sal, yrs, rookie: false }; p.ask = null;
-    p.acq = `Signed in ${S.phase === "freeagency" ? "free agency" : "season"} ${S.season}`;
-    log(`${teamName(ut)} sign ${p.name}: ${fmtMoney(sal)} x ${yrs}.`, ut);
-    save(); emit();
-    return { ok: true, msg: `${p.name} signed: ${fmtMoney(sal)} for ${yrs} year${yrs > 1 ? "s" : ""}.` };
-  }
-  function releasePlayer(pid) {
-    const p = P(pid), ut = S.userTeam;
-    if (!p || p.team !== ut) return { ok: false };
-    if (!p.c.nonGuaranteed && p.c.sal > 0 && S.phase !== "freeagency") T(ut).dead.push({ name: p.name, sal: p.c.sal, season: S.season });
-    else if (!p.c.nonGuaranteed && p.c.sal > 0) T(ut).dead.push({ name: p.name, sal: Math.round(p.c.sal / 2), season: S.season });
-    p.team = null; p.c = { sal: 0, yrs: 0, rookie: false }; p.ask = askingContract(p);
-    const t = T(ut); if (t.rotation) t.rotation = t.rotation.filter((x) => x !== pid);
-    log(`${teamName(ut)} release ${p.name}.`, ut);
-    save(); emit();
-    return { ok: true };
-  }
-  function faDays(n) {
-    if (S.phase !== "freeagency") return;
-    for (let i = 0; i < n; i++) { S.faDay++; aiFreeAgency(0.4); }
-    save(); emit();
-  }
-  // AI teams sign the best free agents they can afford.
-  function aiFreeAgency(intensity = 1, fillOnly = false) {
+  function aiFreeAgency(intensity = 1) {
     const fas = freeAgents().sort((a, b) => talent(b) - talent(a));
-    for (const t of shuffle(S.teams.slice())) {
-      if (t.id === S.userTeam) continue;
-      const n = roster(t.id).length;
-      if (n >= S.econ.rosterMax) continue;
-      if (fillOnly && n >= S.econ.rosterMin) continue;
-      if (!fillOnly && rnd() > intensity && n >= S.econ.rosterMin) continue;
-      const space = capSpace(t.id);
-      const worst = roster(t.id).sort((a, b) => a.r.ovr - b.r.ovr)[0];
+    for (const t of shuffle(activeTeams().slice())) {
+      let n = roster(t.fid).length;
       for (const p of fas) {
-        if (p.team) continue;
+        if (p.team || n >= S.rules.rosterMax) continue;
+        if (rnd() > intensity && n >= S.rules.rosterMin) break;
         const ask = p.ask || askingContract(p);
-        const need = n < S.econ.rosterMin;
-        if (ask.sal <= space || (need && ask.sal <= S.econ.min * 1.0001)) {
-          if (!need && worst && p.r.ovr < worst.r.ovr + 2) continue;
-          p.team = t.id; p.c = { sal: ask.sal, yrs: ask.yrs, rookie: false }; p.ask = null;
+        const need = n < S.rules.rosterMin;
+        const worst = roster(t.fid).sort((a, b) => a.r.ovr - b.r.ovr)[0];
+        if (!need && worst && p.r.ovr < worst.r.ovr + 2) continue;
+        if (ask.sal <= capSpace(t.fid) || (need && ask.sal <= econ().min * 1.3)) {
+          p.team = t.fid; p.c = { sal: Math.min(ask.sal, Math.max(econ().min, capSpace(t.fid))), yrs: ask.yrs }; p.ask = null; n++;
           p.acq = `Signed ${S.season}`;
-          if (p.r.ovr >= 65) log(`${p.name} signs with the ${teamName(t.id)} (${fmtMoney(ask.sal)} x ${ask.yrs}).`, t.id);
-          break;
-        }
-        if (need) {
-          // Desperate: take the best min-salary guy available.
-          const cheap = fas.find((x) => !x.team && (x.ask?.sal || 0) <= S.econ.min * 1.3);
-          if (cheap) { cheap.team = t.id; cheap.c = { sal: S.econ.min, yrs: 1, rookie: false }; cheap.ask = null; }
-          break;
+          txn(`${teamName(t.fid)} sign ${p.name} (${fmtMoney(p.c.sal)} × ${p.c.yrs}).`, t.fid);
+          if (p.r.ovr >= 70) log(`${p.name} signs with the ${teamName(t.fid)}.`, t.fid, "fa");
+          if (!need) break;
         }
       }
     }
   }
-  function aiRosterFix(tid, initial) {
-    // Trim to max by releasing the lowest-rated players; fill to min with cheap FAs.
-    let ps = roster(tid).sort((a, b) => a.r.ovr - b.r.ovr);
-    while (ps.length > S.econ.rosterMax) {
-      const p = ps.shift(); p.team = null; p.c = { sal: 0, yrs: 0, rookie: false }; p.ask = askingContract(p);
-      if (!initial) log(`${teamName(tid)} waive ${p.name}.`, tid);
-    }
+  function aiRosterFix(fid, initial) {
+    let ps = roster(fid).sort((a, b) => a.r.ovr - b.r.ovr);
+    while (ps.length > S.rules.rosterMax) { const p = ps.shift(); p.team = null; p.c = { sal: 0, yrs: 0 }; p.ask = askingContract(p); if (!initial) txn(`${teamName(fid)} waive ${p.name}.`, fid); }
     let guard = 0;
-    while (roster(tid).length < S.econ.rosterMin && guard++ < 10) {
+    while (roster(fid).length < S.rules.rosterMin && guard++ < 20) {
       const fa = freeAgents().sort((a, b) => b.r.ovr - a.r.ovr)[0];
-      if (!fa) break;
-      const sal = Math.max(S.econ.min, Math.min(fa.ask?.sal || S.econ.min, capSpace(tid)));
-      fa.team = tid; fa.c = { sal, yrs: 1, rookie: false }; fa.ask = null;
+      if (!fa) { const g = genPlayer({ age: 24, ovrMean: 42, ovrSd: 4, potRoom: 2 }); S.players[g.id] = g; continue; }
+      const sal = Math.max(econ().min, Math.min(fa.ask?.sal || econ().min, capSpace(fid)));
+      fa.team = fid; fa.c = { sal: Math.round(sal / 1000) * 1000, yrs: 1 }; fa.ask = null;
+      if (!initial) txn(`${teamName(fid)} sign ${fa.name}.`, fid);
     }
   }
-  function aiDaily() {
-    // In-season: teams with injuries or short rosters patch them.
-    for (const t of S.teams) if (t.id !== S.userTeam) {
-      const healthy = roster(t.id).filter((p) => !p.inj).length;
-      if (healthy < 9 && roster(t.id).length < S.econ.rosterMax) aiRosterFix(t.id);
+  // AI-to-AI trades: contenders buy current production from rebuilders who want youth.
+  function aiTrades(n) {
+    const ts = activeTeams();
+    for (let k = 0; k < n * 6 && n > 0; k++) {
+      const c = pick(ts.filter((t) => teamMode(t.fid) === "contend")), r = pick(ts.filter((t) => teamMode(t.fid) === "rebuild"));
+      if (!c || !r) return;
+      const vet = roster(r.fid).filter((p) => age(p) >= 27 && p.r.ovr >= 62 && p.inj < 999).sort((a, b) => b.r.ovr - a.r.ovr)[0];
+      if (!vet) continue;
+      const young = roster(c.fid).filter((p) => age(p) <= 25 && p.id !== vet.id).sort((a, b) => playerValue(b, r.fid) - playerValue(a, r.fid));
+      for (const y of young.slice(0, 4)) {
+        const cGain = playerValue(vet, c.fid) - playerValue(y, c.fid), rGain = playerValue(y, r.fid) - playerValue(vet, r.fid);
+        const cAfter = payroll(c.fid) - y.c.sal + vet.c.sal, rAfter = payroll(r.fid) - vet.c.sal + y.c.sal;
+        if (cGain > 2 && rGain > -1 && cAfter <= S.rules.cap * 1.0001 && rAfter <= S.rules.cap * 1.0001) {
+          vet.team = c.fid; y.team = r.fid; vet.acq = `Traded from ${r.abbr} ${S.season}`; y.acq = `Traded from ${c.abbr} ${S.season}`;
+          const text = `Trade: the ${teamName(c.fid)} acquire ${vet.name} from the ${teamName(r.fid)} for ${y.name}.`;
+          txn(text, c.fid); if (vet.r.ovr >= 70) log(text, c.fid, "trade");
+          n--; break;
+        }
+      }
     }
-  }
-  function startNextSeason() {
-    if (S.phase !== "freeagency") return { ok: false };
-    const ut = S.userTeam;
-    const n = roster(ut).length;
-    if (n > S.econ.rosterMax) return { ok: false, msg: `Your roster has ${n} players; the limit is ${S.econ.rosterMax}.` };
-    for (let i = 0; i < 4; i++) aiFreeAgency(0.6);
-    for (const t of S.teams) if (t.id !== ut) aiRosterFix(t.id);
-    // Unsigned old free agents retire.
-    for (const p of freeAgents()) if (p.age >= 31 && rnd() < 0.5) p.retired = S.season;
-    // Reset season state.
-    for (const t of S.teams) Object.assign(t, { w: 0, l: 0, hw: 0, hl: 0, pf: 0, pa: 0, streak: 0 });
-    for (const p of Object.values(S.players)) p.inj = 0;
-    S.boxes = {}; S.playoffs = null; S.draft = null; S.awards = null; S.day = 0;
-    S.schedule = makeSchedule();
-    S.phase = "preseason";
-    log(`Preseason ${S.season}. Set your roster: you need ${S.econ.rosterMin}-${S.econ.rosterMax} players.`);
-    save(); emit();
-    return { ok: true };
-  }
-
-  // ---------- trades ----------
-  function evaluateTrade(partner, give, get, givePicks = [], getPicks = []) {
-    // give/get = arrays of player ids from the user's perspective.
-    const ut = S.userTeam;
-    const valIn = sum(give.map((id) => playerValue(P(id), partner))) + sum(givePicks.map((k) => pickValue(S.picks[k], partner)));
-    const valOut = sum(get.map((id) => playerValue(P(id), partner))) + sum(getPicks.map((k) => pickValue(S.picks[k], partner)));
-    const salIn = sum(give.map((id) => P(id).c.sal)), salOut = sum(get.map((id) => P(id).c.sal));
-    const issues = [];
-    if (!tradesOpen()) issues.push(S.phase === "regular" ? "The trade deadline has passed." : "Trades are closed right now.");
-    if (!give.length && !get.length && !givePicks.length && !getPicks.length) issues.push("Add players or picks to the deal.");
-    const userAfter = payroll(ut) - salIn + salOut, partnerAfter = payroll(partner) - salOut + salIn;
-    if (userAfter > S.econ.cap && salOut > salIn) issues.push(`You'd be ${fmtMoney(userAfter - S.econ.cap)} over the hard cap.`);
-    if (partnerAfter > S.econ.cap && salIn > salOut) issues.push(`The ${T(partner).name} would be over the hard cap.`);
-    const uN = roster(ut).length - give.length + get.length, pN = roster(partner).length - get.length + give.length;
-    if (uN > S.econ.rosterMax) issues.push(`You'd have ${uN} players (max ${S.econ.rosterMax}).`);
-    if (pN > S.econ.rosterMax) issues.push(`They'd have ${pN} players (max ${S.econ.rosterMax}).`);
-    // AI wants a margin; untouchable stars are expensive.
-    const need = valOut * 1.08 + 1.5;
-    const ratio = need > 0 ? valIn / need : 1;
-    return { valIn, valOut, need, ratio, accept: ratio >= 1 && !issues.length, issues };
-  }
-  function proposeTrade(partner, give, get, givePicks = [], getPicks = []) {
-    const ev = evaluateTrade(partner, give, get, givePicks, getPicks);
-    if (!ev.accept) return { ok: false, ev };
-    const ut = S.userTeam;
-    give.forEach((id) => { const p = P(id); p.team = partner; p.acq = `Traded from ${ut} ${S.season}`; });
-    get.forEach((id) => { const p = P(id); p.team = ut; p.acq = `Traded from ${partner} ${S.season}`; });
-    givePicks.forEach((k) => (S.picks[k].owner = partner));
-    getPicks.forEach((k) => (S.picks[k].owner = ut));
-    const pkName = (k) => pickLabel(S.picks[k]);
-    const desc = `${teamName(ut)} trade ${[...give.map((id) => P(id).name), ...givePicks.map(pkName)].join(", ") || "nothing"} to the ${teamName(partner)} for ${[...get.map((id) => P(id).name), ...getPicks.map(pkName)].join(", ") || "nothing"}.`;
-    log(desc, ut);
-    S.tradeLog.unshift({ season: S.season, text: desc });
-    const t = T(ut); if (t.rotation) t.rotation = t.rotation.filter((x) => !give.includes(x));
-    aiRosterFix(partner);
-    save(); emit();
-    return { ok: true, ev, desc };
-  }
-  // Ask the AI what it would take: greedily add the user's assets that close
-  // the gap most efficiently (up to 4 additions).
-  function suggestBalance(partner, give, get, givePicks, getPicks) {
-    give = give.slice(); givePicks = givePicks.slice();
-    let ev = evaluateTrade(partner, give, get, givePicks, getPicks);
-    if (ev.ratio >= 1 && !ev.issues.length) return { type: "ok" };
-    const added = [], addedPicks = [];
-    for (let step = 0; step < 4; step++) {
-      const opts = [];
-      for (const p of roster(S.userTeam)) if (!give.includes(p.id) && playerValue(p, partner) > 0.5)
-        opts.push({ kind: "p", id: p.id, ev: evaluateTrade(partner, [...give, p.id], get, givePicks, getPicks) });
-      S.picks.forEach((pk, k) => { if (pk.owner === S.userTeam && !givePicks.includes(k))
-        opts.push({ kind: "k", id: k, ev: evaluateTrade(partner, give, get, [...givePicks, k], getPicks) }); });
-      if (!opts.length) break;
-      // Prefer the cheapest single addition that completes the deal; otherwise the biggest step.
-      const done = opts.filter((o) => o.ev.ratio >= 1 && !o.ev.issues.length).sort((a, b) => a.ev.ratio - b.ev.ratio);
-      const choice = done[0] || opts.sort((a, b) => b.ev.ratio - a.ev.ratio)[0];
-      if (choice.kind === "p") { give.push(choice.id); added.push(choice.id); } else { givePicks.push(choice.id); addedPicks.push(choice.id); }
-      if (done.length) return { type: "add", pids: added, picks: addedPicks };
-    }
-    return { type: "none" };
-  }
-  function pickLabel(pk) {
-    const rd = ["", "1st", "2nd", "3rd"][pk.round];
-    return `${pk.season} ${rd}-round pick${pk.orig !== pk.owner ? ` (via ${pk.orig})` : ""}`;
-  }
-
-  // ---------- money ----------
-  function fmtMoney(x) {
-    if (Math.abs(x) >= 1e6) return "$" + (x / 1e6).toFixed(2) + "M";
-    return "$" + Math.round(x / 1000) + "K";
   }
 
   // ---------- persistence ----------
+  function pruneSave() {
+    // Keep saves small: forget generated players who retired without a notable career.
+    for (const p of Object.values(S.players)) {
+      if (!p.real && p.retired && !p.awards.length && Math.max(0, ...p.career.map((c) => c.ovr || 0)) < 62) delete S.players[p.id];
+      else if (!p.team && !p.real && p.undrafted && p.retired) delete S.players[p.id];
+    }
+    for (const p of Object.values(S.players)) { if (p.retired) { p.stats = {}; p.po = {}; } }
+  }
+  let saveError = null;
   function save() {
-    try { localStorage.setItem(SAVE_KEY, JSON.stringify(S)); } catch (e) { /* storage unavailable */ }
+    try { localStorage.setItem(SAVE_KEY, JSON.stringify(S)); saveError = null; }
+    catch (e) { saveError = "Couldn't save in this browser (storage full or blocked). Use Save & info → Copy save code to keep your league."; }
   }
-  function load() {
-    try {
-      const raw = localStorage.getItem(SAVE_KEY);
-      if (!raw) return null;
-      S = JSON.parse(raw); rankCache = null; emit(); return S;
-    } catch (e) { return null; }
-  }
-  function importState(obj) { S = obj; rankCache = null; save(); emit(); }
+  function load() { try { const raw = localStorage.getItem(SAVE_KEY); if (!raw) return null; S = JSON.parse(raw); rankCache = null; return S; } catch (e) { return null; } }
+  function importState(o) { S = o; rankCache = null; save(); }
   function clearSave() { try { localStorage.removeItem(SAVE_KEY); } catch (e) {} S = null; rankCache = null; }
-  function hasSave() { try { return !!localStorage.getItem(SAVE_KEY); } catch (e) { return false; } }
+  function fmtMoney(x) { return Math.abs(x) >= 1e6 ? "$" + (x / 1e6).toFixed(2) + "M" : "$" + Math.round(x / 1000) + "K"; }
 
-  // Preview team ratings before a game exists (team picker).
-  function previewTeams() {
-    const tmp = S; // may be null
-    S = { players: {}, teams: D.teams.map((t) => ({ ...t, dead: [] })), userTeam: null, econ: { rosterMax: 99 } };
-    for (const p of D.players) S.players[p.id] = { ...p, inj: 0 };
-    const out = D.teams.map((t) => {
-      const ps = roster(t.id).sort((a, b) => b.r.ovr - a.r.ovr);
-      return { ...t, rating: teamRating(t.id), payroll: sum(ps.map((p) => p.c.sal)), top: ps.slice(0, 3).map((p) => ({ name: p.name, ovr: p.r.ovr })), n: ps.length };
-    });
-    S = tmp;
-    return out;
+  // Preview a starting season for the new-league screen.
+  function previewSeason(y) {
+    const tl = D.teams[y] || [];
+    return tl.map((t) => {
+      const ps = D.players.filter((p) => p.s[y] && p.s[y][F.fid] === t.fid).map((p) => ({ name: p.n, ovr: p.s[y][F.ovr] })).sort((a, b) => b.ovr - a.ovr);
+      return { ...t, top: ps.slice(0, 3), n: ps.length };
+    }).sort((a, b) => b.w / (b.w + b.l) - a.w / (a.w + a.l));
   }
 
   window.GM = {
-    get S() { return S; }, data: D,
-    newGame, load, save, importState, clearSave, hasSave, previewTeams, onChange: (f) => listeners.push(f),
-    P, T, teamName, roster, freeAgents, payroll, capSpace, teamRating, rotation, setRotation, powerRanks, teamMode,
-    playerValue, pickValue, pickLabel, marketSalary, talent,
-    startSeason, simDays, lastDay, tradeDeadlineDay, tradesOpen, standings, simPlayoffs, simPlayoffDay,
-    advanceToDraft, draftOnClock, availableProspects, draftUntilUser, userDraft,
-    resignPlayer, letGo, advanceToFreeAgency, faDays, startNextSeason,
-    offerContract, releasePlayer, evaluateTrade, proposeTrade, suggestBalance,
-    perGame, fmtMoney, STAT_KEYS,
+    get S() { return S; }, data: D, F, get saveError() { return saveError; },
+    newLeague, load, save, importState, clearSave, previewSeason, eraRules,
+    P, T, activeTeams, teamName, roster, freeAgents, payroll, capSpace, econ, age, teamRating, powerRanks, teamMode, rotation,
+    startSeason, simDays, lastDay, tradeDeadlineDay, standings, activeConfs, simPlayoffs, toOffseason, advanceToNextSeason,
+    pendingEvents, setEventApproval, officeOpen, setRules, addConference, renameConference, removeConference, setTeamConf,
+    expandTeam, relocateTeam, foldTeam, perGame, fmtMoney, realLine, realSeasons, fidAbbr,
   };
 })();

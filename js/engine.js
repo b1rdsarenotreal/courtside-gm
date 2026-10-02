@@ -411,16 +411,24 @@
       br.rounds.push(next);
     }
   }
-  function endRegularSeason() {
-    const r = S.rules, confs = activeConfs();
-    const all = standings();
-    S.seasonOrder = all.map((t) => t.fid);
-    const brackets = [];
+  function seedBrackets() {
+    const r = S.rules, confs = activeConfs(), all = standings(), brackets = [];
     if (r.seeding === "conference" && confs.length > 1) {
       const per = Math.max(1, Math.round(r.playoffTeams / confs.length));
       const extra = Math.ceil(Math.log2(confs.length));
       for (const c of confs) brackets.push(mkBracket(`${c}`, standings(c).slice(0, per).map((t) => t.fid), extra));
     } else brackets.push(mkBracket("Playoffs", all.slice(0, Math.min(r.playoffTeams, all.length)).map((t) => t.fid), 0));
+    return brackets;
+  }
+  // "If the season ended today": the bracket current standings would produce.
+  function projectedPlayoffs() {
+    const brackets = seedBrackets();
+    return { brackets, final: null, champion: null, projected: true, qualified: brackets.flatMap((b) => b.seeds) };
+  }
+  function endRegularSeason() {
+    const all = standings();
+    S.seasonOrder = all.map((t) => t.fid);
+    const brackets = seedBrackets();
     S.playoffs = { brackets, final: null, champion: null, qualified: brackets.flatMap((b) => b.seeds) };
     checkPlayoffProgress();
     S.awards = computeAwards();
@@ -1011,8 +1019,23 @@
       games: S.schedule.filter((g) => g.played).map((g) => [g.gid, g.day, g.home, g.away, g.hs, g.as, g.ot || 0, g.off ?? null, g.real ? g.real[0] : null, g.real ? g.real[1] : null]),
       info: S.schedInfo || { real: false },
       playoffs: playoffSummary(S.playoffs),
+      bracket: S.playoffs ? { brackets: S.playoffs.brackets, final: S.playoffs.final, champion: S.playoffs.champion } : null,
     };
   }
+  // The bracket for any season: live, projected (before the playoffs), or archived.
+  function seasonBracket(y) {
+    if (y === S.season && S.phase !== "offseason") {
+      if (S.playoffs) return { po: S.playoffs, teams: teamSnapshot(), live: true };
+      if (S.phase === "regular" || S.phase === "preseason") return { po: projectedPlayoffs(), teams: teamSnapshot(), live: true };
+    }
+    const a = (S.archive || {})[y];
+    return a && a.bracket ? { po: a.bracket, teams: a.teams, live: false } : null;
+  }
+  const bracketSeasons = () => {
+    const ys = Object.keys(S.archive || {}).map(Number).filter((y) => S.archive[y].bracket);
+    if (S.phase !== "offseason" && !ys.includes(S.season)) ys.push(S.season);
+    return ys.sort((a, b) => b - a);
+  };
   // Unified view of any season's games for the UI.
   function seasonGames(y) {
     if (y === S.season && S.phase !== "offseason") {
@@ -1034,7 +1057,7 @@
   };
 
   window.GM = {
-    seasonGames, archivedSeasons, init, getKV, setKV, hasDB, realScheduleStatus, flush,
+    seasonGames, archivedSeasons, seasonBracket, bracketSeasons, init, getKV, setKV, hasDB, realScheduleStatus, flush,
     get S() { return S; }, data: D, F, get saveError() { return saveError; },
     newLeague, load, save, importState, clearSave, previewSeason, eraRules,
     P, T, activeTeams, teamName, roster, freeAgents, payroll, capSpace, econ, age, teamRating, powerRanks, teamMode, rotation,

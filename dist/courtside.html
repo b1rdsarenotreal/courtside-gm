@@ -218,6 +218,29 @@ details summary { padding: 4px 0; }
 .logo.big { width: 54px; height: 40px; }
 .logo img { width: 100%; height: 100%; min-width: 0; min-height: 0; object-fit: contain; display: block; }
 
+/* visual playoff bracket */
+.bk-wrap { overflow-x: auto; padding-bottom: 6px; }
+.bk { position: relative; margin: 0 auto; }
+.bk svg { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.bk svg path { fill: none; stroke: var(--line); stroke-width: 2; }
+.bk svg path.on { stroke: var(--accent); }
+.bk-label { position: absolute; top: 0; text-align: center; font-family: var(--font-mono); font-size: 0.66rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); display: grid; line-height: 1.3; }
+.bk-label span { letter-spacing: 0.04em; text-transform: none; opacity: 0.8; }
+.bk-card { position: absolute; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; display: grid; grid-auto-rows: 1fr; overflow: hidden; box-shadow: 0 1px 2px rgba(10, 14, 30, 0.06); }
+.bk-card.live { border-color: var(--accent); }
+.bk-card.pending { border-style: dashed; background: var(--surface-2); }
+.bk-card.bye { background: var(--surface-2); }
+.bk-row { display: flex; align-items: center; gap: 6px; padding: 0 8px; font-size: 0.84rem; min-width: 0; width: 100%; background: none; border: 0; text-align: left; color: inherit; cursor: pointer; }
+.bk-row + .bk-row { border-top: 1px solid var(--line); }
+.bk-row:hover .bk-name { text-decoration: underline; }
+.bk-row.win { font-weight: 700; }
+.bk-row.lose { color: var(--muted); }
+.bk-row.lose .badge, .bk-row.lose .logo { opacity: 0.5; }
+.bk-seed { width: 14px; flex: none; color: var(--muted); font-size: 0.72rem; text-align: right; font-weight: 500; }
+.bk-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bk-w { font-family: var(--font-display); font-size: 1.1rem; min-width: 12px; text-align: right; }
+.bk-champ { position: absolute; border: 2px solid var(--accent); background: var(--accent-soft); border-radius: 8px; padding: 8px 10px; display: grid; gap: 4px; justify-items: center; text-align: center; }
+
 </style>
 </head>
 <body>
@@ -652,16 +675,24 @@ window.NAME_POOL = {
       br.rounds.push(next);
     }
   }
-  function endRegularSeason() {
-    const r = S.rules, confs = activeConfs();
-    const all = standings();
-    S.seasonOrder = all.map((t) => t.fid);
-    const brackets = [];
+  function seedBrackets() {
+    const r = S.rules, confs = activeConfs(), all = standings(), brackets = [];
     if (r.seeding === "conference" && confs.length > 1) {
       const per = Math.max(1, Math.round(r.playoffTeams / confs.length));
       const extra = Math.ceil(Math.log2(confs.length));
       for (const c of confs) brackets.push(mkBracket(`${c}`, standings(c).slice(0, per).map((t) => t.fid), extra));
     } else brackets.push(mkBracket("Playoffs", all.slice(0, Math.min(r.playoffTeams, all.length)).map((t) => t.fid), 0));
+    return brackets;
+  }
+  // "If the season ended today": the bracket current standings would produce.
+  function projectedPlayoffs() {
+    const brackets = seedBrackets();
+    return { brackets, final: null, champion: null, projected: true, qualified: brackets.flatMap((b) => b.seeds) };
+  }
+  function endRegularSeason() {
+    const all = standings();
+    S.seasonOrder = all.map((t) => t.fid);
+    const brackets = seedBrackets();
     S.playoffs = { brackets, final: null, champion: null, qualified: brackets.flatMap((b) => b.seeds) };
     checkPlayoffProgress();
     S.awards = computeAwards();
@@ -1252,8 +1283,23 @@ window.NAME_POOL = {
       games: S.schedule.filter((g) => g.played).map((g) => [g.gid, g.day, g.home, g.away, g.hs, g.as, g.ot || 0, g.off ?? null, g.real ? g.real[0] : null, g.real ? g.real[1] : null]),
       info: S.schedInfo || { real: false },
       playoffs: playoffSummary(S.playoffs),
+      bracket: S.playoffs ? { brackets: S.playoffs.brackets, final: S.playoffs.final, champion: S.playoffs.champion } : null,
     };
   }
+  // The bracket for any season: live, projected (before the playoffs), or archived.
+  function seasonBracket(y) {
+    if (y === S.season && S.phase !== "offseason") {
+      if (S.playoffs) return { po: S.playoffs, teams: teamSnapshot(), live: true };
+      if (S.phase === "regular" || S.phase === "preseason") return { po: projectedPlayoffs(), teams: teamSnapshot(), live: true };
+    }
+    const a = (S.archive || {})[y];
+    return a && a.bracket ? { po: a.bracket, teams: a.teams, live: false } : null;
+  }
+  const bracketSeasons = () => {
+    const ys = Object.keys(S.archive || {}).map(Number).filter((y) => S.archive[y].bracket);
+    if (S.phase !== "offseason" && !ys.includes(S.season)) ys.push(S.season);
+    return ys.sort((a, b) => b - a);
+  };
   // Unified view of any season's games for the UI.
   function seasonGames(y) {
     if (y === S.season && S.phase !== "offseason") {
@@ -1275,7 +1321,7 @@ window.NAME_POOL = {
   };
 
   window.GM = {
-    seasonGames, archivedSeasons, init, getKV, setKV, hasDB, realScheduleStatus, flush,
+    seasonGames, archivedSeasons, seasonBracket, bracketSeasons, init, getKV, setKV, hasDB, realScheduleStatus, flush,
     get S() { return S; }, data: D, F, get saveError() { return saveError; },
     newLeague, load, save, importState, clearSave, previewSeason, eraRules,
     P, T, activeTeams, teamName, roster, freeAgents, payroll, capSpace, econ, age, teamRating, powerRanks, teamMode, rotation,
@@ -1514,7 +1560,7 @@ window.NAME_POOL = {
     if (S.phase === "playoffs") {
       const po = S.playoffs;
       return `<section class="callout"><div class="panel-head"><h3>${po.champion ? `The ${esc(GM.teamName(po.champion))} win the ${S.season} title` : `${S.season} playoffs`}</h3>${po.champion ? `<span class="sub">Finals MVP: ${esc(GM.P(po.finalsMvp)?.name || "–")}</span>` : ""}</div>
-        ${brackets()}${awardsBlock(S.awards)}
+        ${bracketChart(S.playoffs, GM.seasonGames(S.season).teams)}${awardsBlock(S.awards)}
         <div class="row">${po.champion ? `<button class="btn primary" data-act="toOffseason">Open the offseason</button>` : `<button class="btn" data-act="po" data-mode="game">Sim one game</button><button class="btn" data-act="po" data-mode="round">Sim round</button><button class="btn primary" data-act="po" data-mode="all">Sim to champion</button>`}</div></section>`;
     }
     const h = S.history[0], ev = GM.pendingEvents();
@@ -1559,10 +1605,147 @@ window.NAME_POOL = {
       + table(conf ? `League table · ${S.season}` : `Standings · ${S.season}`, GM.standings(), cutConf ? 0 : per)
       + `<div class="sub">The dashed line marks the playoff cut (${cutConf ? `top ${per} per conference` : `top ${per} overall`}).${br ? ` In real life, ${S.season}'s best record belonged to ${esc(br.city)} ${esc(br.name)} at ${br.w}-${br.l}.` : ""}</div>`;
   }
+  // ---------- visual bracket ----------
+  const BK = { CW: 200, CH: 62, VG: 18, HG: 44, TOP: 34 };
+  // Every round of a bracket, with not-yet-played rounds filled in as pending slots.
+  function fullRounds(br) {
+    const out = [];
+    for (let r = 0; r < (br.R || 0); r++) {
+      const n = 2 ** (br.R - r - 1), row = [];
+      for (let i = 0; i < n; i++) {
+        const s = br.rounds[r] && br.rounds[r][i];
+        if (s) row.push({ ...s, bye: !s.lo });
+        else if (r === 0) {
+          // Not seeded yet (e.g. a Finals bracket waiting on conference champions).
+          let o = [1]; while (o.length < 2 ** br.R) { const m = o.length * 2 + 1; o = o.flatMap((x) => [x, m - x]); }
+          row.push({ hi: br.seeds[o[2 * i] - 1] || null, lo: br.seeds[o[2 * i + 1] - 1] || null, wh: 0, wl: 0, winner: null, pending: true });
+        } else { const a = out[r - 1][2 * i], b = out[r - 1][2 * i + 1]; row.push({ hi: a.winner || null, lo: b.winner || null, wh: 0, wl: 0, winner: null, pending: true }); }
+      }
+      out.push(row);
+    }
+    return out;
+  }
+  function bracketChart(po, snap) {
+    const { CW, CH, VG, HG, TOP } = BK, unit = CH + VG, col = CW + HG;
+    const cards = [], paths = [], labels = [];
+    const nm = (fid) => (snap[fid] || GM.T(fid) || { name: fid }).name;
+    const row = (br, fid, w, isWin, isLose, showW) => {
+      if (!fid) return `<div class="bk-row"><span class="bk-seed"></span><span class="bk-name muted">TBD</span></div>`;
+      const seed = br ? br.seeds.indexOf(fid) + 1 : "";
+      return `<button class="bk-row ${isWin ? "win" : isLose ? "lose" : ""}" data-act="team" data-id="${fid}"><span class="bk-seed">${seed || ""}</span>${snapBadge(snap, fid)}<span class="bk-name">${esc(nm(fid))}</span><b class="bk-w">${showW ? w : ""}</b></button>`;
+    };
+    const card = (x, y, m, br) => {
+      if (m.bye) { cards.push(`<div class="bk-card bye" style="left:${x}px;top:${y + CH / 4}px;width:${CW}px;height:${CH / 2}px">${row(br, m.hi, 0, false, false, false).replace('<b class="bk-w"></b>', '<span class="chip">Bye</span>')}</div>`); return; }
+      const started = (m.wh || 0) + (m.wl || 0) > 0;
+      const state = m.winner ? "done" : started ? "live" : m.pending || !m.lo ? "pending" : "";
+      cards.push(`<div class="bk-card ${state}" style="left:${x}px;top:${y}px;width:${CW}px;height:${CH}px" title="${m.bestOf ? `Best of ${m.bestOf}` : ""}">${row(br, m.hi, m.wh, m.winner && m.winner === m.hi, m.winner && m.winner !== m.hi, started || m.winner)}${row(br, m.lo, m.wl, m.winner && m.winner === m.lo, m.winner && m.winner !== m.lo, started || m.winner)}</div>`);
+    };
+    const link = (x1, y1, x2, y2, on) => { const mx = (x1 + x2) / 2; paths.push(`<path class="${on ? "on" : ""}" d="M${x1},${y1} H${mx} V${y2} H${x2}"/>`); };
+    const roundName = (br, r, conf) => {
+      const fromEnd = br.R - 1 - r + (br.extra || 0);
+      if (fromEnd === 0) return "Finals";
+      if (fromEnd === 1) return conf ? `${br.label} final` : "Semifinals";
+      if (fromEnd === 2 && r > 0) return conf ? `${br.label} semis` : "Quarterfinals";
+      return conf ? `${br.label} round ${r + 1}` : r === 0 ? "First round" : `Round ${r + 1}`;
+    };
+    const boOf = (br, r) => {
+      const s = (br.rounds[r] || []).find((x) => x.lo); if (s) return `Best of ${s.bestOf}`;
+      const fe = br.R - 1 - r + (br.extra || 0), R = GM.S.rules;
+      return `Best of ${fe === 0 ? R.finalsBo : fe === 1 ? R.semisBo : R.earlyBo}`;
+    };
+    // Draw one bracket; returns the champion slot's position for linking onward.
+    function draw(br, x0, y0, H, dir, conf) {
+      const R = br.R || 0;
+      if (!R) { // single qualifier
+        const y = y0 + H / 2 - CH / 4;
+        cards.push(`<div class="bk-card bye" style="left:${x0}px;top:${y}px;width:${CW}px;height:${CH / 2}px">${row(br, br.seeds[0], 0, false, false, false)}</div>`);
+        return { x: x0, y: y + CH / 4, w: CW, champ: br.seeds[0] };
+      }
+      const rounds = fullRounds(br), Hb = 2 ** (R - 1) * unit, yb = y0 + (H - Hb) / 2;
+      const X = (r) => (dir === "ltr" ? x0 + r * col : x0 + (R - 1 - r) * col);
+      const C = (r, i) => yb + (i + 0.5) * 2 ** r * unit;
+      rounds.forEach((rd, r) => {
+        labels.push(`<div class="bk-label" style="left:${X(r)}px;top:${y0 - TOP}px;width:${CW}px">${esc(roundName(br, r, conf))}<span>${boOf(br, r)}</span></div>`);
+        rd.forEach((m, i) => {
+          card(X(r), C(r, i) - CH / 2, m, br);
+          if (r > 0) for (const k of [2 * i, 2 * i + 1]) {
+            const ch = rounds[r - 1][k], cy = C(r - 1, k);
+            const fromX = dir === "ltr" ? X(r - 1) + CW : X(r - 1), toX = dir === "ltr" ? X(r) : X(r) + CW;
+            link(fromX, cy, toX, C(r, i), !!ch.winner);
+          }
+        });
+      });
+      const last = rounds[R - 1][0];
+      return { x: X(R - 1), y: C(R - 1, 0), w: CW, champ: last.winner || null };
+    }
+    let W = 0, H = 0;
+    const brs = po.brackets;
+    const finalMatch = (champs) => {
+      if (po.final) { const fr = fullRounds(po.final); return { m: fr.length ? fr[fr.length - 1][0] : { hi: po.final.champion, bye: true }, br: po.final }; }
+      return { m: { hi: champs[0] || null, lo: champs[1] || null, wh: 0, wl: 0, winner: null, pending: true }, br: null };
+    };
+    const champBox = (x, y, fid) => {
+      cards.push(`<div class="bk-champ" style="left:${x}px;top:${y}px;width:${CW}px"><span class="eyebrow">${po.projected ? "Projected bracket" : "Champion"}</span>${fid ? `<div class="row" style="justify-content:center">${snapBadge(snap, fid)}<b>${esc(snapName(snap, fid))}</b></div>` : `<span class="muted">To be decided</span>`}</div>`);
+    };
+    if (brs.length === 2) {
+      // Conferences face each other; the Finals sit in the middle.
+      const [A, B] = brs, R = Math.max(A.R || 0, B.R || 0);
+      H = Math.max(2 ** Math.max(0, (A.R || 1) - 1), 2 ** Math.max(0, (B.R || 1) - 1)) * unit;
+      const fx = R * col;
+      const a = draw(A, (R - Math.max(1, A.R || 0)) * col, TOP, H, "ltr", true);
+      const b = draw(B, fx + CW + HG, TOP, H, "rtl", true);
+      const fy = TOP + H / 2;
+      const f = finalMatch([A.champion, B.champion]);
+      labels.push(`<div class="bk-label" style="left:${fx}px;width:${CW}px">Finals<span>${f.m.bestOf ? `Best of ${f.m.bestOf}` : `Best of ${GM.S.rules.finalsBo}`}</span></div>`);
+      card(fx, fy - CH / 2, f.m, f.br);
+      link(a.x + a.w, a.y, fx, fy, !!A.champion);
+      link(b.x, b.y, fx + CW, fy, !!B.champion);
+      champBox(fx, fy + CH / 2 + 18, po.champion);
+      W = fx + CW + HG + Math.max(1, B.R || 0) * col - HG;
+      H = Math.max(H, H / 2 + CH / 2 + 88);
+    } else if (brs.length === 1) {
+      const A = brs[0], R = A.R || 0;
+      H = Math.max(1, 2 ** Math.max(0, R - 1)) * unit;
+      const a = draw(A, 0, TOP, H, "ltr", false);
+      const cx = a.x + CW + HG;
+      link(a.x + a.w, a.y, cx, a.y, !!A.champion);
+      champBox(cx, a.y - 30, po.champion);
+      W = cx + CW; H = Math.max(H, a.y - TOP + 60);
+    } else {
+      // Three or more conferences: each conference bracket, then the Finals bracket.
+      let y = TOP, maxW = 0;
+      for (const br of brs) {
+        const h = Math.max(1, 2 ** Math.max(0, (br.R || 1) - 1)) * unit;
+        const a = draw(br, 0, y, h, "ltr", true);
+        maxW = Math.max(maxW, a.x + CW);
+        y += h + TOP + 10;
+      }
+      const champs = brs.map((b) => b.champion).filter(Boolean);
+      const fb = po.final || { label: "Finals", seeds: champs, R: Math.ceil(Math.log2(Math.max(2, brs.length))), rounds: [], extra: 0 };
+      const fbx = maxW + HG * 2;
+      const hf = Math.max(1, 2 ** Math.max(0, (fb.R || 1) - 1)) * unit;
+      const fRes = draw(fb, fbx, TOP + (y - TOP - hf) / 2, hf, "ltr", false);
+      champBox(fRes.x + CW + HG, fRes.y - 30, po.champion);
+      W = fRes.x + 2 * CW + HG; H = y;
+    }
+    return `<div class="bk-wrap"><div class="bk" style="width:${W}px;height:${H + TOP + 10}px">
+      <svg width="${W}" height="${H + TOP + 10}" aria-hidden="true">${paths.join("")}</svg>${labels.join("")}${cards.join("")}</div></div>`;
+  }
+
   function renderPlayoffs() {
     const S = GM.S, r = S.rules;
-    $("#view").innerHTML = S.playoffs ? `<section class="panel"><h2>${S.season} playoffs</h2>${brackets()}${S.phase === "playoffs" && !S.playoffs.champion ? `<div class="row"><button class="btn" data-act="po" data-mode="game">Sim one game</button><button class="btn" data-act="po" data-mode="round">Sim round</button><button class="btn primary" data-act="po" data-mode="all">Sim to champion</button></div>` : ""}</section>`
-      : `<section class="panel"><h2>Playoffs</h2><div class="empty">The bracket appears when the regular season ends. Format: ${r.playoffTeams} teams seeded ${r.seeding === "conference" ? "by conference" : "league-wide"}, best of ${r.earlyBo} in early rounds, ${r.semisBo} in the semifinals and ${r.finalsBo} in the Finals.</div></section>`;
+    const years = GM.bracketSeasons();
+    if (!years.includes(ui.poSeason)) ui.poSeason = years[0];
+    const sb = ui.poSeason != null ? GM.seasonBracket(ui.poSeason) : null;
+    const live = sb && sb.live && ui.poSeason === S.season;
+    const fmt = `${r.playoffTeams} teams seeded ${r.seeding === "conference" ? "by conference" : "league-wide"}, best of ${r.earlyBo} early, ${r.semisBo} in the semifinals, ${r.finalsBo} in the Finals`;
+    $("#view").innerHTML = `<section class="panel">
+      <div class="panel-head"><div><h2>${ui.poSeason ?? S.season} playoffs</h2><div class="sub">${sb && sb.po.projected ? `If the season ended today. Format: ${fmt}.` : live ? `Format: ${fmt}.` : "Final bracket."}</div></div>
+        ${years.length > 1 ? `<select id="poSeason" aria-label="Season">${years.map((y) => `<option ${y === ui.poSeason ? "selected" : ""}>${y}</option>`).join("")}</select>` : ""}</div>
+      ${sb ? bracketChart(sb.po, sb.teams) : `<div class="empty">No bracket for this season.</div>`}
+      ${live && S.phase === "playoffs" && !S.playoffs.champion ? `<div class="row"><button class="btn" data-act="po" data-mode="game">Sim one game</button><button class="btn" data-act="po" data-mode="round">Sim round</button><button class="btn primary" data-act="po" data-mode="all">Sim to champion</button></div>` : ""}
+      ${sb && !sb.po.projected ? `<div class="row"><button class="btn small" data-act="poGames">Game-by-game results</button></div>` : ""}
+    </section>`;
   }
 
   // ---------- teams ----------
@@ -1875,11 +2058,12 @@ window.NAME_POOL = {
   function act(a, el) {
     const S = GM.S, id = el.dataset.id;
     switch (a) {
-      case "tab": ui.tab = el.dataset.tab; ui.modal = null; ui.confirm = null; window.scrollTo(0, 0); break;
+      case "tab": if (el.dataset.tab === "playoffs") ui.poSeason = GM.S.season; ui.tab = el.dataset.tab; ui.modal = null; ui.confirm = null; window.scrollTo(0, 0); break;
       case "newLeague": GM.newLeague(ui.setup.year, { realCareers: $("#optReal").checked, followHistory: $("#optHist").checked }); ui.tab = "office"; window.scrollTo(0, 0); toast(`Welcome, Commissioner. The ${ui.setup.year} season awaits.`); break;
       case "player": ui.modal = { type: "player", id: +id }; break;
       case "box": ui.modal = { type: "box", season: +el.dataset.season, id: el.dataset.gid }; break;
       case "schedView": ui.sched.view = el.dataset.v; break;
+      case "poGames": ui.sched = { season: ui.poSeason, team: "all", view: "playoffs" }; ui.tab = "schedule"; window.scrollTo(0, 0); break;
       case "teamSched": ui.sched = { season: GM.S.season, team: id, view: "regular" }; ui.tab = "schedule"; ui.modal = null; window.scrollTo(0, 0); break;
       case "clearLogo": delete logos[el.dataset.key]; saveLogos(); toast("Logo removed."); break;
       case "team": ui.modal = { type: "team", id }; ui.confirm = null; break;
@@ -1933,6 +2117,7 @@ window.NAME_POOL = {
     else if (el.id === "newsKind") { ui.newsKind = el.value; render(); }
     else if (el.id === "pteam") { ui.players.team = el.value; render(); }
     else if (el.id === "txTeam") { ui.txTeam = el.value; render(); }
+    else if (el.id === "poSeason") { ui.poSeason = +el.value; render(); }
     else if (el.id === "schedSeason") { ui.sched.season = +el.value; render(); }
     else if (el.id === "schedTeam") { ui.sched.team = el.value; render(); }
     else if (el.dataset && el.dataset.logo && el.files && el.files[0]) {

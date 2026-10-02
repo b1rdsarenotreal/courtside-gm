@@ -372,11 +372,65 @@
     if (S.day >= end) endRegularSeason();
     save();
   }
+  // Standings with WNBA-style tiebreakers. Teams tied on winning percentage are
+  // separated, as a group, by: (1) head-to-head record among the tied teams,
+  // (2) record against teams at .500 or better, (3) point differential,
+  // (4) a coin flip. When a step separates some teams, any still tied start over
+  // at step 1 among themselves, as multi-team ties work in the real league.
+  const pct = (w, l) => (w + l ? w / (w + l) : 0);
+  function h2hTable() {
+    const h = {};
+    for (const g of S.schedule) {
+      if (!g.played) continue;
+      const [win, lose] = g.hs > g.as ? [g.home, g.away] : [g.away, g.home];
+      ((h[win] ||= {})[lose] ||= [0, 0])[0]++;
+      ((h[lose] ||= {})[win] ||= [0, 0])[1]++;
+    }
+    return h;
+  }
+  function coin(fid) { let x = 0; const s = `${S.season}:${fid}`; for (let i = 0; i < s.length; i++) x = (x * 31 + s.charCodeAt(i)) >>> 0; return x; }
+  function breakTies(group, ctx, depth = 0) {
+    if (group.length < 2) return group;
+    const steps = [
+      ["head-to-head", (t) => { let w = 0, l = 0; for (const o of group) if (o !== t) { const r = ctx.h2h[t.fid]?.[o.fid]; if (r) { w += r[0]; l += r[1]; } } return w + l ? pct(w, l) : 0.5; }],
+      ["record vs .500+ teams", (t) => { const r = ctx.vsGood[t.fid] || [0, 0]; return r[0] + r[1] ? pct(r[0], r[1]) : 0.5; }],
+      ["point differential", (t) => t.pf - t.pa],
+    ];
+    for (const [name, f] of steps) {
+      const vals = new Map(group.map((t) => [t, f(t)]));
+      const distinct = [...new Set(vals.values())];
+      if (distinct.length < 2) continue;
+      distinct.sort((a, b) => b - a);
+      const out = [];
+      for (const v of distinct) {
+        const sub = group.filter((t) => vals.get(t) === v);
+        if (sub.length === 1) { ctx.notes[sub[0].fid] = name; out.push(sub[0]); }
+        else out.push(...breakTies(sub, ctx, depth + 1));
+      }
+      return out;
+    }
+    const out = group.slice().sort((a, b) => coin(a.fid) - coin(b.fid));
+    out.forEach((t) => (ctx.notes[t.fid] = "coin flip"));
+    return out;
+  }
   function standings(conf) {
-    return activeTeams().filter((t) => !conf || t.conf === conf).sort((a, b) => {
-      const pa = a.w / Math.max(1, a.w + a.l), pb = b.w / Math.max(1, b.w + b.l);
-      return pb !== pa ? pb - pa : (b.pf - b.pa) - (a.pf - a.pa);
-    });
+    const all = activeTeams();
+    const ts = all.filter((t) => !conf || t.conf === conf);
+    if (!S.schedule.some((g) => g.played)) return ts.slice().sort((a, b) => a.city.localeCompare(b.city));
+    const good = new Set(all.filter((t) => pct(t.w, t.l) >= 0.5).map((t) => t.fid));
+    const h2h = h2hTable(), vsGood = {};
+    for (const g of S.schedule) {
+      if (!g.played) continue;
+      for (const [me, op, won] of [[g.home, g.away, g.hs > g.as], [g.away, g.home, g.as > g.hs]])
+        if (good.has(op)) (vsGood[me] ||= [0, 0])[won ? 0 : 1]++;
+    }
+    const ctx = { h2h, vsGood, notes: {} };
+    const byPct = new Map();
+    for (const t of ts) { const p = pct(t.w, t.l); if (!byPct.has(p)) byPct.set(p, []); byPct.get(p).push(t); }
+    const out = [];
+    for (const p of [...byPct.keys()].sort((a, b) => b - a)) out.push(...breakTies(byPct.get(p), ctx));
+    out.notes = ctx.notes; // fid -> tiebreaker that ordered a tied team
+    return out;
   }
   function activeConfs() { return S.conferences.filter((c) => activeTeams().some((t) => t.conf === c)); }
 
@@ -745,7 +799,7 @@
     const R = S.rules.draftRounds;
     if (!R) { finishDraftClass(cls); return; }
     const teams = activeTeams();
-    const recOrder = teams.slice().sort((a, b) => (a.w / Math.max(1, a.w + a.l)) - (b.w / Math.max(1, b.w + b.l))).map((t) => t.fid);
+    const recOrder = standings().slice().reverse().map((t) => t.fid); // worst first, tiebreakers applied
     const newT = teams.filter((t) => t.expansionYear === y).map((t) => t.fid);
     let base = recOrder.filter((f) => !newT.includes(f));
     let order1 = base;

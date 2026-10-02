@@ -55,7 +55,7 @@ h3 { font-size: 1.15rem; text-transform: uppercase; letter-spacing: 0.04em; }
   background: var(--court); color: var(--court-ink);
   border-bottom: 3px solid var(--accent);
 }
-.topbar-inner { max-width: 1240px; margin: 0 auto; padding: 10px 16px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+.topbar-inner { max-width: none; margin: 0 auto; padding: 10px clamp(16px, 2.5vw, 40px); display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
 .brand { font-family: var(--font-display); font-weight: 700; font-size: 1.05rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--court-muted); }
 .teamline { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .teamline .tname { font-family: var(--font-display); font-size: 1.5rem; font-weight: 700; text-transform: uppercase; white-space: nowrap; }
@@ -65,7 +65,7 @@ h3 { font-size: 1.15rem; text-transform: uppercase; letter-spacing: 0.04em; }
 .score .val { font-family: var(--font-display); font-size: 1.35rem; font-weight: 700; }
 .score .val.accent { color: var(--accent); }
 
-.tabs { max-width: 1240px; margin: 0 auto; padding: 0 16px; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }
+.tabs { max-width: none; margin: 0 auto; padding: 0 clamp(16px, 2.5vw, 40px); display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }
 .tabs::-webkit-scrollbar { display: none; }
 .tab { background: none; border: 0; color: var(--court-muted); padding: 8px 12px 10px; cursor: pointer; font-family: var(--font-display); font-size: 1rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; border-bottom: 3px solid transparent; margin-bottom: -3px; }
 .tab:hover { color: var(--court-ink); }
@@ -73,7 +73,7 @@ h3 { font-size: 1.15rem; text-transform: uppercase; letter-spacing: 0.04em; }
 .tab .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-left: 5px; vertical-align: middle; }
 
 /* ---------- page ---------- */
-main { max-width: 1240px; margin: 0 auto; padding-inline: 16px; padding-block: 18px 60px; display: grid; gap: 18px; }
+main { max-width: none; margin: 0 auto; padding-inline: clamp(16px, 2.5vw, 40px); padding-block: 18px 60px; display: grid; gap: 18px; }
 .grid2 { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 18px; align-items: start; }
 .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
 

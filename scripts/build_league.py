@@ -81,6 +81,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-dir", type=Path, default=None)
     ap.add_argument("--season", type=int, default=2026)
+    ap.add_argument("--career-decay", type=float, default=0.8,
+                    help="weight multiplier per season back in time (1.0 = full career counts equally, 0 = latest season only)")
     ap.add_argument("--out", type=Path, default=Path(__file__).resolve().parent.parent / "js" / "data.js")
     a = ap.parse_args()
     S = a.season
@@ -128,50 +130,96 @@ def main() -> None:
     df["name"] = df.player.fillna(df.player_name)
     df["age"] = df.age_r.fillna(df.age).fillna(24)
 
-    tot_min = df["min"] * df["gp"]
-    m = tot_min.clip(lower=1)
-    per36 = lambda col: df[col] * df["gp"] * 36 / m
-    rated = tot_min >= 120
+    # ---- Career stats: every regular season from 1997 through S ------------
+    # Each season is scored against that season's league (z-scores), so eras
+    # with different pace compare fairly. A player's career rating is the
+    # minutes-weighted average of her seasons, with older seasons discounted by
+    # `career_decay` per year (1.0 = every season counts equally).
+    print(f"Loading career stats 1997-{S}...", file=sys.stderr)
+    seasons = []
+    for y in range(1997, S + 1):
+        b = load(f"wnba_stats/leaguedash/parquet/player_stats_base_{y}.parquet", a.data_dir)
+        ad = load(f"wnba_stats/leaguedash/parquet/player_stats_advanced_{y}.parquet", a.data_dir)
+        b = b[b.season_type == "Regular Season"].sort_values("gp", ascending=False).drop_duplicates("player_id")
+        ad = ad[ad.season_type == "Regular Season"].sort_values("gp", ascending=False).drop_duplicates("player_id")
+        b = b.merge(ad[["player_id", "pie", "ts_pct"]], on="player_id", how="left")
+        b = b.rename(columns={"fg3_m": "fg3m", "fg3_a": "fg3a"})
+        b["season"] = y
+        b = b[b["min"] > 0]
+        g = (b.pts + 0.4 * b.fgm - 0.7 * b.fga - 0.4 * (b.fta - b.ftm) + 0.7 * b.oreb
+             + 0.3 * b.dreb + b.stl + 0.7 * b.ast + 0.7 * b.blk - 0.4 * b.pf - b.tov)
+        b["gmsc36"] = g * 36 / b["min"]
+        b["mpg"] = b["min"] / b.gp
+        q = b["min"] >= 150
+        for col in ["gmsc36", "pie", "mpg"]:
+            b["z_" + col] = z(b[col].fillna(b[col][q].median()), q).clip(-3, 4)
+        seasons.append(b)
+    car = pd.concat(seasons, ignore_index=True)
+    car = car[car.player_id.isin(df.index)].copy()
+    car["decay"] = a.career_decay ** (S - car.season)
+    car["w"] = car["min"] * car["decay"]
 
-    # Game Score per 36, shrunk toward replacement level by minutes played.
-    gmsc = (df.pts + 0.4 * df.fgm - 0.7 * df.fga - 0.4 * (df.fta - df.ftm) + 0.7 * df.oreb
-            + 0.3 * df.dreb + df.stl + 0.7 * df.ast + 0.7 * df.blk - 0.4 * df.pf - df.tov)
-    gmsc36 = gmsc * df.gp * 36 / m
+    def wavg(col):
+        return (car[col] * car.w).groupby(car.player_id).sum() / car.w.groupby(car.player_id).sum()
+    def dsum(col):  # recency-discounted career total
+        return (car[col] * car.decay).groupby(car.player_id).sum()
+
+    eff_min = dsum("min").reindex(df.index).fillna(0)
+    rated = eff_min >= 120
     prior = 300.0
-    repl_g = gmsc36[rated].quantile(0.15)
-    w = tot_min / (tot_min + prior)
-    gmsc_s = gmsc36 * w + repl_g * (1 - w)
-    bpm_s = df.bpm.fillna(-6).clip(-15, 15) * w + (-6) * (1 - w)
-    rapm_s = df.adj_rapm.fillna(-3) * w + (-3) * (1 - w)
-    mpg = df["min"]
+    w = eff_min / (eff_min + prior)
+    REPL = -1.0  # replacement level, in season z-score units
+    zg = wavg("z_gmsc36").reindex(df.index).fillna(REPL) * w + REPL * (1 - w)
+    zp = wavg("z_pie").reindex(df.index).fillna(REPL) * w + REPL * (1 - w)
+    zm = wavg("z_mpg").reindex(df.index).fillna(REPL) * w + REPL * (1 - w)
+    df["seasons"] = car.groupby("player_id").season.nunique().reindex(df.index).fillna(0).astype(int)
 
-    comp = 0.50 * z(gmsc_s, rated) + 0.20 * z(bpm_s, rated) + 0.15 * z(rapm_s, rated) + 0.15 * z(mpg, rated)
+    # Current-season impact metrics (2026 only in the source) as a form check.
+    tot_min = df["min"] * df["gp"]
+    w26 = tot_min / (tot_min + prior)
+    bpm_s = df.bpm.fillna(-6).clip(-15, 15) * w26 + (-6) * (1 - w26)
+    rapm_s = df.adj_rapm.fillna(-3) * w26 + (-3) * (1 - w26)
+
+    comp = (0.45 * z(zg, rated) + 0.15 * z(zp, rated) + 0.15 * z(zm, rated)
+            + 0.15 * z(bpm_s, rated) + 0.10 * z(rapm_s, rated))
     zc = z(comp, rated)
     ovr = (58 + 11.5 * zc).clip(38, 97)
-    # Players with no WNBA minutes (rookies who didn't play / deep reserves)
-    ovr[tot_min < 1] = 44
+    ovr[eff_min < 1] = 44  # no WNBA minutes yet
     df["ovr"] = ovr.round().astype(int)
 
-    # Skill sub-ratings from per-36 rates (regressed for low-minute players).
+    # Skill sub-ratings from recency-weighted career per-36 rates and shooting.
+    cm = eff_min.clip(lower=1)
+    per36 = lambda col: dsum(col).reindex(df.index).fillna(0) * 36 / cm
+    tot = lambda col: dsum(col).reindex(df.index).fillna(0)
     def skill(series, lo=30, hi=99, reg=45):
         s = 55 + 13 * z(series, rated)
         s = s * w + reg * (1 - w)
         return s.clip(lo, hi).round().astype(int)
 
-    two_a = (df.fga - df.fg3a)
-    two_pct = ((df.fgm - df.fg3m) / two_a.replace(0, np.nan)).fillna(0.42)
-    two_pct_s = two_pct * (two_a * df.gp / (two_a * df.gp + 60)) + 0.45 * (60 / (two_a * df.gp + 60))
+    two_m, two_a = tot("fgm") - tot("fg3m"), tot("fga") - tot("fg3a")
+    two_pct_s = (two_m + 0.45 * 60) / (two_a + 60)
     df["ins"] = skill(0.6 * z(per36("pts") - 3 * per36("fg3m"), rated) + 0.4 * z(two_pct_s, rated))
-    three_pct_s = (df.fg3m * df.gp + 0.32 * 40) / (df.fg3a * df.gp + 40)
+    three_pct_s = (tot("fg3m") + 0.32 * 40) / (tot("fg3a") + 40)
     df["thr"] = skill(0.55 * z(three_pct_s, rated) + 0.45 * z(per36("fg3a"), rated))
-    ft_s = (df.ftm * df.gp + 0.75 * 30) / (df.fta * df.gp + 30)
+    ft_s = (tot("ftm") + 0.75 * 30) / (tot("fta") + 30)
     df["fts"] = skill(z(ft_s, rated))
     df["ply"] = skill(0.75 * z(per36("ast"), rated) - 0.25 * z(per36("tov"), rated))
     df["reb_r"] = skill(z(per36("reb"), rated))
-    df["def"] = skill(0.4 * z(per36("stl") + per36("blk"), rated)
-                      + 0.4 * z(df.dbpm.fillna(-2).clip(-8, 8), rated) + 0.2 * z(mpg, rated))
+    df["def"] = skill(0.45 * z(per36("stl") + per36("blk"), rated)
+                      + 0.35 * z(df.dbpm.fillna(-2).clip(-8, 8), rated) + 0.2 * z(zm, rated))
     df["ath"] = skill(0.5 * z(per36("oreb") + per36("blk") + per36("stl"), rated)
                       + 0.5 * z(per36("fta"), rated))
+
+    # Real season-by-season lines for the player card.
+    car_hist = {}
+    for r_ in car.sort_values("season").itertuples():
+        g = max(1, r_.gp)
+        car_hist.setdefault(int(r_.player_id), {})[str(r_.season)] = {
+            "team": r_.team_abbreviation, "gp": int(r_.gp), "min": round(r_.min / g, 1),
+            "pts": round(r_.pts / g, 1), "reb": round(r_.reb / g, 1), "ast": round(r_.ast / g, 1),
+            "stl": round(r_.stl / g, 1), "blk": round(r_.blk / g, 1),
+            "fg_pct": round(float(r_.fg_pct or 0), 3), "fg3_pct": round(float(r_.fg3_pct or 0), 3),
+            "ft_pct": round(float(r_.ft_pct or 0), 3)}
 
     # Potential: young players get room to grow.
     def potential(row):
@@ -229,6 +277,7 @@ def main() -> None:
                     "bpm": round(float(row.bpm), 1) if pd.notna(row.bpm) else None,
                     "war": round(float(row.war), 2) if pd.notna(row.war) else None,
                     "team": row.team_abbreviation if isinstance(row.team_abbreviation, str) else None},
+            "career": car_hist.get(int(pid), {}),
         })
 
     # ---- Calibrate team strength -> point margin ---------------------------
@@ -247,6 +296,7 @@ def main() -> None:
     out = {
         "source": "sportsdataverse/wehoop-wnba-stats-data",
         "baseSeason": S, "startSeason": S + 1,
+        "ratingMethod": {"careerFrom": 1997, "careerDecay": a.career_decay},
         "econ": ECON,
         "sim": {"marginPerRating": round(max(1.2, min(3.5, slope)), 3), "homeAdv": 2.2,
                 "pace": 80.0, "leaguePts": round(float(np.mean([t["last"]["ppg"] for t in teams])), 1),

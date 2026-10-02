@@ -51,7 +51,7 @@
         id: p.id, name: p.name, team: p.team, pos: p.pos, ht: p.ht, age: p.age, exp: p.exp ?? 0,
         school: p.school, acq: p.acq, r: { ...p.r }, c: { ...p.c }, inj: 0, injType: null,
         stats: {}, po: {}, career: [],
-        hist: { [D.baseSeason]: { ...p.s } },
+        hist: { ...(p.career || {}) }, last: { ...p.s },
         real: true,
       };
       if (!pl.team) { pl.c = { sal: 0, yrs: 0, rookie: false }; pl.ask = askingContract(pl); }

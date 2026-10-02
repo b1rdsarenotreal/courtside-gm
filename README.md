@@ -51,16 +51,17 @@ The builder reads these files:
 |---|---|
 | `rosters/rosters_2026` | teams, positions, height, age, experience, how acquired |
 | `player_season_stats/…_2026` (base + advanced, per game) | box-score production, TS%, usage |
+| `leaguedash/player_stats_base_*`, `player_stats_advanced_*` (1997–2026) | full career season totals, PIE; player-card career tables |
 | `player_impact/wnba_player_impact_2026` | BPM, adjusted RAPM, WAR |
 | `standings/standings_2026` | team records and point differential (to calibrate the game sim) |
 | `draft/draft_2026` | reference for the real 2026 draft |
 
 ## How ratings work
 
-- **OVR** blends four inputs: Game Score per 36 minutes (50%), Box Plus/Minus (20%), adjusted RAPM (15%) and minutes per game (15%). Each is shrunk toward replacement level for players with few minutes, then scaled so the league average sits near 58 and stars reach the 80s and 90s.
-- **Skill ratings** come from per-36 rates and regressed shooting percentages: inside scoring, 3-point, free throw, playmaking, rebounding, defense and athleticism.
+- **OVR uses each player's full WNBA career**, from 1997 through 2026. Each season is first scored against that year's league, which keeps eras with different pace comparable. Those season scores are averaged by minutes played, with each earlier year counting 80% as much as the one after it, so a 2019 MVP season still counts but recent form counts most. The career inputs are Game Score per 36 (45%), PIE (15%) and minutes per game (15%). The 2026 Box Plus/Minus (15%) and adjusted RAPM (10%) are added as a current-form check. Players with few career minutes are shrunk toward replacement level, and the scale puts the league average near 58. Change the weighting with `--career-decay`: `1.0` counts every season equally, `0.5` leans hard on recent seasons.
+- **Skill ratings** come from recency-weighted career per-36 rates and career shooting percentages: inside scoring, 3-point, free throw, playmaking, rebounding, defense and athleticism.
 - **Potential** adds growth room for players younger than 27.
-- **Game sim.** Team strength is the minutes-weighted OVR of the rotation. Strength gaps convert to point margin with a slope fitted to real 2026 point differentials (r ≈ 0.94), plus home court and randomness. Player box scores are then distributed by skill ratings.
+- **Game sim.** Team strength is the minutes-weighted OVR of the rotation. Strength gaps convert to point margin with a slope fitted to real 2026 point differentials (r ≈ 0.87), plus home court and randomness. Player box scores are then distributed by skill ratings.
 
 ## Contracts are estimates
 

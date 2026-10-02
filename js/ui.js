@@ -280,11 +280,17 @@
     const t = GM.T(p.team);
     const s = GM.perGame(p);
     const bars = [["OVR", p.r.ovr, "Overall"], ["POT", p.r.pot, "Potential"], ["INS", p.r.ins, "Inside scoring"], ["3PT", p.r.thr, "3-point shooting"], ["FT", p.r.fts, "Free throws"], ["PLY", p.r.ply, "Playmaking"], ["REB", p.r.reb, "Rebounding"], ["DEF", p.r.def, "Defense"], ["ATH", p.r.ath, "Athleticism"]];
-    const base = p.hist && p.hist[GM.data.baseSeason];
+    const base = p.last || (p.hist && p.hist[GM.data.baseSeason]);
     const career = [];
-    if (base && base.gp) career.push({ season: GM.data.baseSeason, team: base.team || "–", gp: base.gp, min: base.min, pts: base.pts, reb: base.reb, ast: base.ast, stl: base.stl, blk: base.blk, fg: base.fg_pct, tp: base.fg3_pct, ft: base.ft_pct, real: true });
+    const realSeasons = Object.keys(p.hist || {}).map(Number).sort((x, y) => x - y);
+    for (const yr of realSeasons) { const h = p.hist[yr]; if (h && h.gp) career.push({ season: yr, team: h.team || "–", gp: h.gp, min: h.min, pts: h.pts, reb: h.reb, ast: h.ast, stl: h.stl, blk: h.blk, fg: h.fg_pct, tp: h.fg3_pct, ft: h.ft_pct, real: true }); }
     for (const c of p.career) career.push(c);
     if (s) career.push({ season: S.season, ...s, cur: true });
+    if (career.length > 1) {
+      const g = career.reduce((t, c) => t + c.gp, 0);
+      const avg = (k) => career.reduce((t, c) => t + (c[k] || 0) * c.gp, 0) / g;
+      career.push({ season: "Career", team: `${career.length} seasons`, gp: g, min: avg("min"), pts: avg("pts"), reb: avg("reb"), ast: avg("ast"), stl: avg("stl"), blk: avg("blk"), fg: avg("fg"), tp: avg("tp"), ft: avg("ft"), total: true });
+    }
     const isMine = p.team === S.userTeam;
     const scouted = p.prospect && p.scout;
     let actions = "";
@@ -297,8 +303,8 @@
         ${p.team ? `<span class="chip">${money(p.c.sal)} × ${p.c.yrs} yr${p.c.yrs === 1 ? "" : "s"}</span>` : ""}${p.inj ? `<span class="chip bad">${esc(p.injType)} · out ${p.inj} games</span>` : ""}${p.acq ? `<span class="chip">${esc(p.acq)}</span>` : ""}${p.real ? "" : `<span class="chip">Generated player</span>`}</div>
       ${scouted ? `<div class="callout"><b>Scouting report</b><div>Your scouts project her at ${ovr(p.scout.ovr)} now with a ceiling around ${rt(p.scout.pot)}. Estimates carry a few points of error either way.</div></div>`
         : `<div class="bars">${bars.map(([l, v, full]) => `<div class="bar" title="${full}"><span class="eyebrow">${l}</span><div class="track"><div class="fill" style="width:${v}%"></div></div><b>${v}</b></div>`).join("")}</div>`}
-      ${career.length ? `<div class="tablewrap"><table><thead><tr><th>Season</th><th>Team</th><th class="num">GP</th><th class="num">MIN</th><th class="num">PTS</th><th class="num">REB</th><th class="num">AST</th><th class="num">STL</th><th class="num">BLK</th><th class="num">FG%</th><th class="num">3P%</th><th class="num">FT%</th></tr></thead><tbody>
-        ${career.map((c) => `<tr><td>${c.season}${c.real ? ' <span class="chip">real</span>' : c.cur ? ' <span class="chip accent">now</span>' : ""}</td><td>${esc(c.team)}</td><td class="num">${c.gp}</td><td class="num">${f1(c.min)}</td><td class="num">${f1(c.pts)}</td><td class="num">${f1(c.reb)}</td><td class="num">${f1(c.ast)}</td><td class="num">${f1(c.stl)}</td><td class="num">${f1(c.blk)}</td><td class="num">${pct(c.fg)}</td><td class="num">${pct(c.tp)}</td><td class="num">${pct(c.ft)}</td></tr>`).join("")}
+      ${career.length ? `<div class="tablewrap" style="max-height:340px;overflow-y:auto"><table><thead><tr><th>Season</th><th>Team</th><th class="num">GP</th><th class="num">MIN</th><th class="num">PTS</th><th class="num">REB</th><th class="num">AST</th><th class="num">STL</th><th class="num">BLK</th><th class="num">FG%</th><th class="num">3P%</th><th class="num">FT%</th></tr></thead><tbody>
+        ${career.map((c) => `<tr${c.total ? ' style="font-weight:700"' : ""}><td>${c.season}${c.real ? ' <span class="chip">real</span>' : c.cur ? ' <span class="chip accent">now</span>' : ""}</td><td>${esc(c.team)}</td><td class="num">${c.gp}</td><td class="num">${f1(c.min)}</td><td class="num">${f1(c.pts)}</td><td class="num">${f1(c.reb)}</td><td class="num">${f1(c.ast)}</td><td class="num">${f1(c.stl)}</td><td class="num">${f1(c.blk)}</td><td class="num">${pct(c.fg)}</td><td class="num">${pct(c.tp)}</td><td class="num">${pct(c.ft)}</td></tr>`).join("")}
       </tbody></table></div>` : `<div class="empty">No WNBA stats yet.</div>`}
       ${base && base.bpm != null ? `<div class="sub">${GM.data.baseSeason} impact: BPM ${f1(base.bpm)} · WAR ${base.war ?? "–"} · TS% ${pct(base.ts)}</div>` : ""}
       <div class="row">${actions}</div>
@@ -483,7 +489,7 @@
       </section>
       <section class="panel"><h2>How it works</h2><div class="prose">
         <p><b>Data.</b> Rosters, stats and impact metrics come from <a href="https://github.com/sportsdataverse/wehoop-wnba-stats-data" target="_blank" rel="noopener">sportsdataverse/wehoop-wnba-stats-data</a> (CC BY 4.0), using the ${GM.data.baseSeason} regular season.</p>
-        <p><b>Ratings.</b> OVR blends Game Score per 36 minutes, Box Plus/Minus, adjusted RAPM and minutes per game, shrunk toward replacement level for players with few minutes, then scaled so the league average sits near 58. Skill ratings come from per-36 rates and shooting percentages.</p>
+        <p><b>Ratings use each player's whole WNBA career</b> (1997 to ${GM.data.baseSeason}). Every season is scored against that year's league, so different eras compare fairly. Seasons are then averaged by minutes played, with each year back counting ${Math.round((GM.data.ratingMethod?.careerDecay ?? 1) * 100)}% as much as the one after it, so recent form still matters most. OVR blends career Game Score per 36, PIE and minutes per game with ${GM.data.baseSeason} Box Plus/Minus and adjusted RAPM, shrinks low-minute players toward replacement level, and scales the league average to about 58. Skill ratings use career per-36 rates and shooting percentages.</p>
         <p><b>Games.</b> Each team's strength is the minutes-weighted OVR of its rotation. Strength gaps convert to point margins at ${S.sim.marginPerRating} points per rating point, fitted to the real ${GM.data.baseSeason} point differentials, plus ${S.sim.homeAdv} points of home court and game-to-game randomness.</p>
         <p><b>Money.</b> The data has no salaries, so contracts are estimates scaled to the 2026 CBA: a hard cap of ${money(S.econ.cap)} this season, max ${money(S.econ.max)}, minimum ${money(S.econ.min)}, growing about ${Math.round(S.econ.growth * 100)}% a year.</p>
         <p><b>Draft classes and filler free agents</b> are generated with invented names; everyone else is a real player.</p>

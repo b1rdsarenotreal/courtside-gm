@@ -283,9 +283,9 @@
       const p3 = clamp(0.25 + p.r.thr * 0.0017 + randn() * 0.06, 0.15, 0.6);
       const p2 = clamp(0.39 + p.r.ins * 0.0017 + randn() * 0.06, 0.3, 0.72);
       const pf = clamp(0.58 + p.r.fts * 0.0033, 0.5, 0.96);
-      const tpa = tpm + Math.round((tpm || (p.r.thr > 50 && x.min > 12 ? 1 : 0)) * (1 / p3 - 1) + (rnd() - 0.3));
+      const tpa = tpm + Math.max(0, Math.round(tpm * (1 / p3 - 1) + (rnd() - 0.5) * 0.8)) + (!tpm && p.r.thr > 50 && x.min > 12 && rnd() < 0.5 ? 1 : 0);
       const twoa = Math.round(twom / p2 + (rnd() - 0.5) * 0.8);
-      const fta = ftm + Math.round(ftm * (1 / pf - 1) + rnd() * 0.7);
+      const fta = ftm + Math.max(0, Math.round(ftm * (1 / pf - 1) + (rnd() - 0.5) * 0.8));
       return { id: p.id, min: Math.round(x.min), start: x.start, pts: pt, tpm, tpa, fgm: twom + tpm, fga: twoa + tpa, ftm, fta, reb: 0, ast: 0, stl: 0, blk: 0, tov: 0 };
     });
     const fgm = sum(lines.map((l) => l.fgm));
@@ -644,6 +644,7 @@
       t.hist.push({ season: S.season, name: `${t.city} ${t.name}`, abbr: t.abbr, w: t.w, l: t.l, res, conf: t.conf });
     }
     for (const p of Object.values(S.players)) { const s = perGame(p); if (s) p.career.push({ season: S.season, ...s, ovr: p.r.ovr }); }
+    archiveSeason();
     S.phase = "offseason";
     if (S.opts.followHistory) queueHistoryEvents(S.season + 1);
     log(`The offseason begins. The commissioner's office is open.`, null, "office");
@@ -667,6 +668,7 @@
     aiFreeAgency(1); aiFreeAgency(1);
     aiTrades(3);
     for (const t of activeTeams()) { Object.assign(t, { w: 0, l: 0, hw: 0, hl: 0, pf: 0, pa: 0, streak: 0 }); aiRosterFix(t.fid); t.dead = t.dead.filter((d) => d.season >= S.season); }
+    S.prevBoxes = { season: S.season - 1, boxes: S.boxes };
     S.playoffs = null; S.awards = null; S.boxes = {}; S.schedule = []; S.day = 0;
     pruneSave();
     S.phase = "preseason";
@@ -893,7 +895,57 @@
     }).sort((a, b) => b.w / (b.w + b.l) - a.w / (a.w + a.l));
   }
 
+  // ---------- schedule archive ----------
+  // Every season's results are kept compactly; full box scores only for the
+  // current and previous season (they're large).
+  function playoffSummary(po) {
+    if (!po) return [];
+    const out = [];
+    for (const br of [...po.brackets, po.final].filter(Boolean)) {
+      const R = br.rounds.length;
+      br.rounds.forEach((rd, ri) => rd.forEach((s) => {
+        if (!s.lo) return;
+        const fromEnd = R - 1 - ri + (br.extra || 0);
+        const label = br.label === "Finals" || (fromEnd === 0 && br.label === "Playoffs") ? "Finals"
+          : fromEnd === 1 ? (br.label === "Playoffs" ? "Semifinals" : `${br.label} final`)
+          : br.label === "Playoffs" ? `Round ${ri + 1}` : `${br.label} round ${ri + 1}`;
+        out.push({ label, hi: s.hi, lo: s.lo, wh: s.wh, wl: s.wl, winner: s.winner, bestOf: s.bestOf, seedHi: br.seeds.indexOf(s.hi) + 1, seedLo: br.seeds.indexOf(s.lo) + 1,
+          games: s.games.map((g) => [g.gid, g.home, g.away, g.hs, g.as]) });
+      }));
+    }
+    return out;
+  }
+  function teamSnapshot() {
+    return Object.fromEntries(S.teams.map((t) => [t.fid, { abbr: t.abbr, city: t.city, name: t.name, color: t.color }]));
+  }
+  function archiveSeason() {
+    S.archive = S.archive || {};
+    S.archive[S.season] = {
+      teams: teamSnapshot(),
+      games: S.schedule.filter((g) => g.played).map((g) => [g.gid, g.day, g.home, g.away, g.hs, g.as, g.ot || 0]),
+      playoffs: playoffSummary(S.playoffs),
+    };
+  }
+  // Unified view of any season's games for the UI.
+  function seasonGames(y) {
+    if (y === S.season && S.phase !== "offseason") {
+      return { season: y, live: true, teams: teamSnapshot(), boxes: S.boxes,
+        games: S.schedule.map((g) => ({ gid: g.gid, day: g.day, home: g.home, away: g.away, hs: g.hs, as: g.as, ot: g.ot || 0, played: g.played })),
+        playoffs: playoffSummary(S.playoffs) };
+    }
+    const a = (S.archive || {})[y]; if (!a) return null;
+    const boxes = y === S.season ? S.boxes : S.prevBoxes && S.prevBoxes.season === y ? S.prevBoxes.boxes : {};
+    return { season: y, live: false, teams: a.teams, boxes,
+      games: a.games.map(([gid, day, home, away, hs, as, ot]) => ({ gid, day, home, away, hs, as, ot, played: true })), playoffs: a.playoffs };
+  }
+  const archivedSeasons = () => {
+    const ys = Object.keys(S.archive || {}).map(Number);
+    if (!ys.includes(S.season) && S.phase !== "offseason" && S.schedule.length) ys.push(S.season);
+    return ys.sort((a, b) => b - a);
+  };
+
   window.GM = {
+    seasonGames, archivedSeasons,
     get S() { return S; }, data: D, F, get saveError() { return saveError; },
     newLeague, load, save, importState, clearSave, previewSeason, eraRules,
     P, T, activeTeams, teamName, roster, freeAgents, payroll, capSpace, econ, age, teamRating, powerRanks, teamMode, rotation,

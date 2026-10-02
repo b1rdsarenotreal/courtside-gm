@@ -201,3 +201,8 @@ textarea { width: 100%; min-height: 90px; font-family: var(--font-mono); font-si
 .field input, .field select { width: 100%; }
 input[type="color"] { width: 44px; height: 32px; padding: 2px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
 details summary { padding: 4px 0; }
+
+/* uploaded logos */
+.logo { display: inline-grid; place-items: center; width: 34px; height: 24px; flex: none; vertical-align: middle; }
+.logo.big { width: 54px; height: 40px; }
+.logo img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }

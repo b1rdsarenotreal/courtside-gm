@@ -213,6 +213,11 @@ textarea { width: 100%; min-height: 90px; font-family: var(--font-mono); font-si
 input[type="color"] { width: 44px; height: 32px; padding: 2px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
 details summary { padding: 4px 0; }
 
+/* uploaded logos */
+.logo { display: inline-grid; place-items: center; width: 34px; height: 24px; flex: none; vertical-align: middle; }
+.logo.big { width: 54px; height: 40px; }
+.logo img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+
 </style>
 </head>
 <body>
@@ -519,9 +524,9 @@ window.NAME_POOL = {
       const p3 = clamp(0.25 + p.r.thr * 0.0017 + randn() * 0.06, 0.15, 0.6);
       const p2 = clamp(0.39 + p.r.ins * 0.0017 + randn() * 0.06, 0.3, 0.72);
       const pf = clamp(0.58 + p.r.fts * 0.0033, 0.5, 0.96);
-      const tpa = tpm + Math.round((tpm || (p.r.thr > 50 && x.min > 12 ? 1 : 0)) * (1 / p3 - 1) + (rnd() - 0.3));
+      const tpa = tpm + Math.max(0, Math.round(tpm * (1 / p3 - 1) + (rnd() - 0.5) * 0.8)) + (!tpm && p.r.thr > 50 && x.min > 12 && rnd() < 0.5 ? 1 : 0);
       const twoa = Math.round(twom / p2 + (rnd() - 0.5) * 0.8);
-      const fta = ftm + Math.round(ftm * (1 / pf - 1) + rnd() * 0.7);
+      const fta = ftm + Math.max(0, Math.round(ftm * (1 / pf - 1) + (rnd() - 0.5) * 0.8));
       return { id: p.id, min: Math.round(x.min), start: x.start, pts: pt, tpm, tpa, fgm: twom + tpm, fga: twoa + tpa, ftm, fta, reb: 0, ast: 0, stl: 0, blk: 0, tov: 0 };
     });
     const fgm = sum(lines.map((l) => l.fgm));
@@ -880,6 +885,7 @@ window.NAME_POOL = {
       t.hist.push({ season: S.season, name: `${t.city} ${t.name}`, abbr: t.abbr, w: t.w, l: t.l, res, conf: t.conf });
     }
     for (const p of Object.values(S.players)) { const s = perGame(p); if (s) p.career.push({ season: S.season, ...s, ovr: p.r.ovr }); }
+    archiveSeason();
     S.phase = "offseason";
     if (S.opts.followHistory) queueHistoryEvents(S.season + 1);
     log(`The offseason begins. The commissioner's office is open.`, null, "office");
@@ -903,6 +909,7 @@ window.NAME_POOL = {
     aiFreeAgency(1); aiFreeAgency(1);
     aiTrades(3);
     for (const t of activeTeams()) { Object.assign(t, { w: 0, l: 0, hw: 0, hl: 0, pf: 0, pa: 0, streak: 0 }); aiRosterFix(t.fid); t.dead = t.dead.filter((d) => d.season >= S.season); }
+    S.prevBoxes = { season: S.season - 1, boxes: S.boxes };
     S.playoffs = null; S.awards = null; S.boxes = {}; S.schedule = []; S.day = 0;
     pruneSave();
     S.phase = "preseason";
@@ -1129,7 +1136,57 @@ window.NAME_POOL = {
     }).sort((a, b) => b.w / (b.w + b.l) - a.w / (a.w + a.l));
   }
 
+  // ---------- schedule archive ----------
+  // Every season's results are kept compactly; full box scores only for the
+  // current and previous season (they're large).
+  function playoffSummary(po) {
+    if (!po) return [];
+    const out = [];
+    for (const br of [...po.brackets, po.final].filter(Boolean)) {
+      const R = br.rounds.length;
+      br.rounds.forEach((rd, ri) => rd.forEach((s) => {
+        if (!s.lo) return;
+        const fromEnd = R - 1 - ri + (br.extra || 0);
+        const label = br.label === "Finals" || (fromEnd === 0 && br.label === "Playoffs") ? "Finals"
+          : fromEnd === 1 ? (br.label === "Playoffs" ? "Semifinals" : `${br.label} final`)
+          : br.label === "Playoffs" ? `Round ${ri + 1}` : `${br.label} round ${ri + 1}`;
+        out.push({ label, hi: s.hi, lo: s.lo, wh: s.wh, wl: s.wl, winner: s.winner, bestOf: s.bestOf, seedHi: br.seeds.indexOf(s.hi) + 1, seedLo: br.seeds.indexOf(s.lo) + 1,
+          games: s.games.map((g) => [g.gid, g.home, g.away, g.hs, g.as]) });
+      }));
+    }
+    return out;
+  }
+  function teamSnapshot() {
+    return Object.fromEntries(S.teams.map((t) => [t.fid, { abbr: t.abbr, city: t.city, name: t.name, color: t.color }]));
+  }
+  function archiveSeason() {
+    S.archive = S.archive || {};
+    S.archive[S.season] = {
+      teams: teamSnapshot(),
+      games: S.schedule.filter((g) => g.played).map((g) => [g.gid, g.day, g.home, g.away, g.hs, g.as, g.ot || 0]),
+      playoffs: playoffSummary(S.playoffs),
+    };
+  }
+  // Unified view of any season's games for the UI.
+  function seasonGames(y) {
+    if (y === S.season && S.phase !== "offseason") {
+      return { season: y, live: true, teams: teamSnapshot(), boxes: S.boxes,
+        games: S.schedule.map((g) => ({ gid: g.gid, day: g.day, home: g.home, away: g.away, hs: g.hs, as: g.as, ot: g.ot || 0, played: g.played })),
+        playoffs: playoffSummary(S.playoffs) };
+    }
+    const a = (S.archive || {})[y]; if (!a) return null;
+    const boxes = y === S.season ? S.boxes : S.prevBoxes && S.prevBoxes.season === y ? S.prevBoxes.boxes : {};
+    return { season: y, live: false, teams: a.teams, boxes,
+      games: a.games.map(([gid, day, home, away, hs, as, ot]) => ({ gid, day, home, away, hs, as, ot, played: true })), playoffs: a.playoffs };
+  }
+  const archivedSeasons = () => {
+    const ys = Object.keys(S.archive || {}).map(Number);
+    if (!ys.includes(S.season) && S.phase !== "offseason" && S.schedule.length) ys.push(S.season);
+    return ys.sort((a, b) => b - a);
+  };
+
   window.GM = {
+    seasonGames, archivedSeasons,
     get S() { return S; }, data: D, F, get saveError() { return saveError; },
     newLeague, load, save, importState, clearSave, previewSeason, eraRules,
     P, T, activeTeams, teamName, roster, freeAgents, payroll, capSpace, econ, age, teamRating, powerRanks, teamMode, rotation,
@@ -1156,13 +1213,43 @@ window.NAME_POOL = {
     tab: "office", modal: null, confirm: null, sort: {},
     newsKind: "all", leaders: "pts", players: { q: "", team: "all" }, txTeam: "all",
     setup: { year: 2026, realCareers: true, followHistory: true },
+    sched: { season: null, team: "all", view: "regular" },
   };
+
+  // ---------- logos (stored only in this browser) ----------
+  const LOGO_KEY = "courtside-logos-v1";
+  let logos = {};
+  try { logos = JSON.parse(localStorage.getItem(LOGO_KEY) || "{}") || {}; } catch (e) { logos = {}; }
+  function saveLogos() { try { localStorage.setItem(LOGO_KEY, JSON.stringify(logos)); return true; } catch (e) { return false; } }
+  function readLogo(file, cb) {
+    const fr = new FileReader();
+    fr.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const N = 128, c = document.createElement("canvas"); c.width = N; c.height = N;
+        const k = Math.min(N / img.width, N / img.height), w = img.width * k, h = img.height * k;
+        c.getContext("2d").drawImage(img, (N - w) / 2, (N - h) / 2, w, h);
+        cb(c.toDataURL("image/png"));
+      };
+      img.onerror = () => cb(null);
+      img.src = fr.result;
+    };
+    fr.readAsDataURL(file);
+  }
 
   // ---------- shared bits ----------
   const tier = (o) => (o >= 80 ? "t1" : o >= 70 ? "t2" : o >= 60 ? "t3" : "t4");
   const ovr = (o) => `<span class="ovr ${tier(o)}">${o}</span>`;
   const rt = (v) => `<span class="rt ${v >= 75 ? "hi" : v >= 55 ? "mid" : "lo"}">${v}</span>`;
-  const badge = (fid, big) => { const t = GM.S && GM.T(fid); return t ? `<span class="badge${big ? " big" : ""}" style="background:${t.color}">${esc(t.abbr)}</span>` : `<span class="badge" style="background:var(--tier-4)">FA</span>`; };
+  const badge = (fid, big) => {
+    const t = GM.S && GM.T(fid);
+    if (t && logos[fid]) return `<span class="logo${big ? " big" : ""}" title="${esc(t.abbr)}"><img src="${logos[fid]}" alt="${esc(t.abbr)}"></span>`;
+    return t ? `<span class="badge${big ? " big" : ""}" style="background:${t.color}">${esc(t.abbr)}</span>` : `<span class="badge" style="background:var(--tier-4)">FA</span>`;
+  };
+  // Badge from a season's team snapshot (names and colors as they were that year).
+  const snapBadge = (snap, fid) => { const t = snap[fid] || GM.T(fid) || { abbr: fid, color: "#666" }; return logos[fid] ? `<span class="logo" title="${esc(t.abbr)}"><img src="${logos[fid]}" alt="${esc(t.abbr)}"></span>` : badgeRaw(t.abbr, t.color); };
+  const snapName = (snap, fid) => { const t = snap[fid] || GM.T(fid); return t ? `${t.city} ${t.name}` : fid; };
+  const leagueMark = () => logos.league ? `<span class="logo big"><img src="${logos.league}" alt="League logo"></span>` : "";
   const badgeRaw = (abbr, color, big) => `<span class="badge${big ? " big" : ""}" style="background:${color}">${esc(abbr)}</span>`;
   const plink = (p) => `<button class="plink" data-act="player" data-id="${p.id}">${esc(p.name)}</button><span class="pos">${esc(p.pos)}</span>`;
   const tlink = (fid) => { const t = GM.T(fid); return t ? `<button class="plink" data-act="team" data-id="${fid}">${esc(t.city)} ${esc(t.name)}</button>` : "–"; };
@@ -1179,11 +1266,11 @@ window.NAME_POOL = {
     const S = GM.S;
     if (!S) { $("#top").innerHTML = `<div class="topbar-inner"><span class="brand">Courtside · Commissioner</span></div>`; return; }
     const champ = S.history[0];
-    const tabs = [["office", "Office"], ["standings", "Standings"], ["playoffs", "Playoffs"], ["teams", "Teams"], ["players", "Players"], ["leaders", "Leaders"], ["draft", "Draft"], ["moves", "Transactions"], ["history", "History"], ["league", "League office"], ["settings", "Save & info"]];
+    const tabs = [["office", "Office"], ["standings", "Standings"], ["schedule", "Schedule"], ["playoffs", "Playoffs"], ["teams", "Teams"], ["players", "Players"], ["leaders", "Leaders"], ["draft", "Draft"], ["moves", "Transactions"], ["history", "History"], ["league", "League office"], ["settings", "Save & info"]];
     const dot = (k) => (k === "league" && GM.officeOpen()) || (k === "playoffs" && S.phase === "playoffs") ? `<span class="dot"></span>` : "";
     $("#top").innerHTML = `
       <div class="topbar-inner">
-        <div class="teamline"><div><div class="brand">Courtside · Commissioner</div><div class="tname">${S.season} ${phaseLabel[S.phase]}${S.phase === "regular" ? ` · day ${S.day}/${GM.lastDay()}` : ""}</div></div></div>
+        <div class="teamline">${leagueMark()}<div><div class="brand">Courtside · Commissioner</div><div class="tname">${S.season} ${phaseLabel[S.phase]}${S.phase === "regular" ? ` · day ${S.day}/${GM.lastDay()}` : ""}</div></div></div>
         <div class="score">
           <div class="cell"><span class="lab">Teams</span><span class="val">${GM.activeTeams().length}</span></div>
           <div class="cell"><span class="lab">Games</span><span class="val">${S.rules.games}</span></div>
@@ -1249,6 +1336,7 @@ window.NAME_POOL = {
         </section>
         <div style="display:grid;gap:18px">
           <section class="panel"><div class="panel-head"><h3>Standings</h3><button class="btn small" data-act="tab" data-tab="standings">Full tables</button></div>${miniStandings()}</section>
+          ${recentResults()}
           <section class="panel"><h3>League's best</h3><div class="tablewrap"><table><tbody>${stars.map((p) => { const s = GM.perGame(p); return `<tr><td>${plink(p)}</td><td>${badge(p.team)}</td><td class="num">${ovr(p.r.ovr)}</td><td class="num muted">${s ? `${s.pts} / ${s.reb} / ${s.ast}` : `age ${GM.age(p)}`}</td></tr>`; }).join("")}</tbody></table></div></section>
         </div>
       </div>`;
@@ -1345,7 +1433,7 @@ window.NAME_POOL = {
     const open = GM.officeOpen() && t.active;
     const conf = ui.confirm === "fold" + fid;
     return `<div class="modal-bg" data-act="closeModal"><div class="modal" style="--tc:${t.color}" role="dialog" aria-modal="true" aria-label="${esc(t.city)} ${esc(t.name)}" data-stop>
-      <div class="modal-head"><div class="row">${badge(fid, true)}<div><h2>${esc(t.city)} ${esc(t.name)}</h2><div class="sub">${t.active ? `${esc(t.conf)} · ${rec(t)} · rating ${GM.teamRating(fid).toFixed(1)} · payroll ${money(GM.payroll(fid))} of ${money(S.rules.cap)}` : `Folded ${t.folded}`} · ${t.titles} title${t.titles === 1 ? "" : "s"}</div></div></div><button class="btn" data-act="closeModal">Close</button></div>
+      <div class="modal-head"><div class="row">${badge(fid, true)}<div><h2>${esc(t.city)} ${esc(t.name)}</h2><div class="sub">${t.active ? `${esc(t.conf)} · ${rec(t)} · rating ${GM.teamRating(fid).toFixed(1)} · payroll ${money(GM.payroll(fid))} of ${money(S.rules.cap)}` : `Folded ${t.folded}`} · ${t.titles} title${t.titles === 1 ? "" : "s"}</div></div></div><div class="row"><button class="btn" data-act="teamSched" data-id="${fid}">Schedule &amp; box scores</button><button class="btn" data-act="closeModal">Close</button></div></div>
       ${t.active ? `<div class="tablewrap"><table><thead><tr><th>Player</th><th class="num">Age</th><th class="num">OVR</th><th class="num">POT</th><th class="num">GP</th><th class="num">PTS</th><th class="num">REB</th><th class="num">AST</th><th class="num">Salary</th><th class="num">Yrs</th><th></th></tr></thead><tbody>
         ${ps.map((p) => { const s = GM.perGame(p); return `<tr><td>${plink(p)}</td><td class="num">${GM.age(p)}</td><td class="num">${ovr(p.r.ovr)}</td><td class="num">${rt(p.r.pot)}</td><td class="num">${s ? s.gp : "–"}</td><td class="num">${s ? s.pts : "–"}</td><td class="num">${s ? s.reb : "–"}</td><td class="num">${s ? s.ast : "–"}</td><td class="num">${money(p.c.sal)}</td><td class="num">${p.c.yrs}</td><td>${p.inj ? `<span class="chip bad">${p.inj >= 999 ? "Out for season" : "Out " + p.inj + "g"}</span>` : ""}</td></tr>`; }).join("")}
       </tbody></table></div>` : ""}
@@ -1498,6 +1586,94 @@ window.NAME_POOL = {
       </div>`;
   }
 
+  function recentResults() {
+    const S = GM.S;
+    const played = S.schedule.filter((g) => g.played);
+    if (!played.length) return "";
+    const day = Math.max(...played.map((g) => g.day));
+    const sg = GM.seasonGames(S.season);
+    return `<section class="panel"><div class="panel-head"><h3>Day ${day} results</h3><button class="btn small" data-act="tab" data-tab="schedule">Full schedule</button></div>
+      <div class="tablewrap"><table><tbody>${played.filter((g) => g.day === day).map((g) => gameRow(sg, g)).join("")}</tbody></table></div></section>`;
+  }
+  function gameRow(sg, g, perspective) {
+    const snap = sg.teams, hasBox = !!sg.boxes[g.gid];
+    const aw = g.as > g.hs, hw = g.hs > g.as;
+    const box = hasBox ? `<button class="btn small" data-act="box" data-season="${sg.season}" data-gid="${g.gid}">Box</button>` : "";
+    if (perspective) {
+      const home = g.home === perspective, opp = home ? g.away : g.home;
+      if (!g.played) return `<tr><td class="muted">Day ${g.day}</td><td>${home ? "vs" : "@"} ${snapBadge(snap, opp)} ${esc(snapName(snap, opp))}</td><td></td><td></td><td></td></tr>`;
+      const us = home ? g.hs : g.as, them = home ? g.as : g.hs;
+      return `<tr><td class="muted">Day ${g.day}</td><td>${home ? "vs" : "@"} ${snapBadge(snap, opp)} ${esc(snapName(snap, opp))}</td><td class="num"><span class="${us > them ? "w" : "l"}">${us > them ? "W" : "L"}</span> ${us}-${them}${g.ot ? " OT" : ""}</td><td class="num muted">${g.rec || ""}</td><td class="num">${box}</td></tr>`;
+    }
+    return `<tr><td>${snapBadge(snap, g.away)} <span class="${aw ? "rt" : "muted"}">${esc(snap[g.away]?.name || g.away)}</span></td><td class="num ${aw ? "rt" : "muted"}">${g.played ? g.as : ""}</td><td class="muted">@</td><td>${snapBadge(snap, g.home)} <span class="${hw ? "rt" : "muted"}">${esc(snap[g.home]?.name || g.home)}</span></td><td class="num ${hw ? "rt" : "muted"}">${g.played ? g.hs : ""}</td><td class="muted">${g.ot ? (g.ot > 1 ? g.ot : "") + "OT" : ""}</td><td class="num">${box}</td></tr>`;
+  }
+  function renderSchedule() {
+    const S = GM.S, years = GM.archivedSeasons();
+    if (!years.length) { $("#view").innerHTML = `<section class="panel"><h2>Schedule</h2><div class="empty">The schedule is made when the season starts.</div></section>`; return; }
+    if (!years.includes(ui.sched.season)) ui.sched.season = years[0];
+    const sg = GM.seasonGames(ui.sched.season);
+    const snap = sg.teams, team = ui.sched.team, view = ui.sched.view;
+    const fids = Object.keys(snap).filter((f) => sg.games.some((g) => g.home === f || g.away === f));
+    if (team !== "all" && !fids.includes(team)) ui.sched.team = "all";
+    const tf = ui.sched.team;
+    const boxNote = Object.keys(sg.boxes).length ? "Box scores are available for this season." : "Box scores are kept for the current and previous season; older seasons keep scores only.";
+    let body = "";
+    if (view === "playoffs") {
+      const series = sg.playoffs.filter((s) => tf === "all" || s.hi === tf || s.lo === tf);
+      body = series.length ? series.map((s) => `<div class="series" style="gap:6px"><div class="panel-head"><b>${esc(s.label)}</b><span class="sub">best of ${s.bestOf}</span></div>
+        <div class="s ${s.winner === s.hi ? "win" : s.winner ? "lose" : ""}"><span>${snapBadge(snap, s.hi)} <span class="muted">${s.seedHi}</span> ${esc(snapName(snap, s.hi))}</span><b>${s.wh}</b></div>
+        <div class="s ${s.winner === s.lo ? "win" : s.winner ? "lose" : ""}"><span>${snapBadge(snap, s.lo)} <span class="muted">${s.seedLo}</span> ${esc(snapName(snap, s.lo))}</span><b>${s.wl}</b></div>
+        ${s.games.length ? `<div class="tablewrap"><table><tbody>${s.games.map(([gid, h, a, hs, as], i) => `<tr><td class="muted">Game ${i + 1}</td>${gameRow(sg, { gid, day: "", home: h, away: a, hs, as, played: true }).replace(/^<tr>|<\/tr>$/g, "")}</tr>`).join("")}</tbody></table></div>` : `<div class="sub">Not started.</div>`}</div>`).join("")
+        : `<div class="empty">${sg.live && S.phase !== "playoffs" ? "The playoffs haven't started yet." : "No playoff games for this filter."}</div>`;
+      body = `<div class="pickgrid" style="grid-template-columns:repeat(auto-fill,minmax(300px,1fr))">${body}</div>`;
+    } else if (tf !== "all") {
+      let w = 0, l = 0;
+      const rows = sg.games.filter((g) => g.home === tf || g.away === tf).sort((a, b) => a.day - b.day).map((g) => {
+        if (g.played) { const won = (g.home === tf) === (g.hs > g.as); won ? w++ : l++; g = { ...g, rec: `${w}-${l}` }; }
+        return gameRow(sg, g, tf);
+      });
+      body = `<div class="tablewrap"><table><thead><tr><th>Day</th><th>Opponent</th><th class="num">Result</th><th class="num">Record</th><th></th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
+    } else {
+      const days = [...new Set(sg.games.map((g) => g.day))].sort((a, b) => a - b);
+      body = days.map((d) => { const gs = sg.games.filter((g) => g.day === d); const done = gs.every((g) => g.played);
+        return `<details open><summary class="eyebrow" style="cursor:pointer">Day ${d} · ${gs.length} game${gs.length === 1 ? "" : "s"}${done ? "" : " · upcoming"}</summary><div class="tablewrap"><table><tbody>${gs.map((g) => gameRow(sg, g)).join("")}</tbody></table></div></details>`; }).join("");
+    }
+    const played = sg.games.filter((g) => g.played).length;
+    $("#view").innerHTML = `<section class="panel">
+      <div class="panel-head"><div><h2>${ui.sched.season} schedule</h2><div class="sub">${sg.games.length} regular-season games · ${played} played · ${boxNote}</div></div>
+        <div class="row"><select id="schedSeason" aria-label="Season">${years.map((y) => `<option ${y === ui.sched.season ? "selected" : ""}>${y}</option>`).join("")}</select>
+        <select id="schedTeam" aria-label="Team"><option value="all">All teams</option>${fids.map((f) => `<option value="${f}" ${f === tf ? "selected" : ""}>${esc(snapName(snap, f))}</option>`).join("")}</select></div></div>
+      <div class="row"><button class="btn small ${view === "regular" ? "primary" : ""}" data-act="schedView" data-v="regular">Regular season</button><button class="btn small ${view === "playoffs" ? "primary" : ""}" data-act="schedView" data-v="playoffs">Playoffs</button></div>
+      ${body}</section>`;
+  }
+  function boxModal(season, gid) {
+    const sg = GM.seasonGames(season); if (!sg) return "";
+    const b = sg.boxes[gid]; if (!b) return "";
+    const snap = sg.teams;
+    const g = sg.games.find((x) => String(x.gid) === String(gid));
+    const po = String(gid).startsWith("po");
+    const tbl = (fid) => {
+      const L = b.players[fid] || [];
+      const tot = L.reduce((t, l) => { for (const k of ["min", "pts", "reb", "ast", "stl", "blk", "tov", "fgm", "fga", "tpm", "tpa", "ftm", "fta"]) t[k] = (t[k] || 0) + l[k]; return t; }, {});
+      const pc = (m, a) => (a ? ((m / a) * 100).toFixed(1) + "%" : "–");
+      return `<div style="display:grid;gap:6px"><h3>${snapBadge(snap, fid)} ${esc(snapName(snap, fid))} · ${fid === b.home ? b.hs : b.as}</h3><div class="tablewrap"><table><thead><tr><th>Player</th><th class="num">MIN</th><th class="num">PTS</th><th class="num">REB</th><th class="num">AST</th><th class="num">STL</th><th class="num">BLK</th><th class="num">TO</th><th class="num">FG</th><th class="num">3PT</th><th class="num">FT</th></tr></thead><tbody>
+        ${L.map((l, i) => { const p = GM.P(l.id); return `<tr${i === 5 ? ' class="cutline"' : ""}><td>${p ? plink(p) : '<span class="muted">Former player</span>'}${l.start ? "" : ""}</td><td class="num">${l.min}</td><td class="num"><b>${l.pts}</b></td><td class="num">${l.reb}</td><td class="num">${l.ast}</td><td class="num">${l.stl}</td><td class="num">${l.blk}</td><td class="num">${l.tov}</td><td class="num">${l.fgm}-${l.fga}</td><td class="num">${l.tpm}-${l.tpa}</td><td class="num">${l.ftm}-${l.fta}</td></tr>`; }).join("")}
+        <tr style="font-weight:700"><td>Team</td><td class="num">${tot.min}</td><td class="num">${tot.pts}</td><td class="num">${tot.reb}</td><td class="num">${tot.ast}</td><td class="num">${tot.stl}</td><td class="num">${tot.blk}</td><td class="num">${tot.tov}</td><td class="num">${tot.fgm}-${tot.fga}</td><td class="num">${tot.tpm}-${tot.tpa}</td><td class="num">${tot.ftm}-${tot.fta}</td></tr>
+        <tr class="muted"><td>Shooting</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td class="num">${pc(tot.fgm, tot.fga)}</td><td class="num">${pc(tot.tpm, tot.tpa)}</td><td class="num">${pc(tot.ftm, tot.fta)}</td></tr>
+      </tbody></table></div><div class="sub">The first five listed started.</div></div>`;
+    };
+    return `<div class="modal-bg" data-act="closeModal"><div class="modal" style="width:min(960px,100%)" role="dialog" aria-modal="true" aria-label="Box score" data-stop>
+      <div class="modal-head"><div><span class="eyebrow">${season} ${po ? "playoffs" : `regular season${g ? ` · day ${g.day}` : ""}`}</span>
+        <h2>${esc(snap[b.away]?.name || b.away)} ${b.as} · ${esc(snap[b.home]?.name || b.home)} ${b.hs}${b.ot ? ` (${b.ot > 1 ? b.ot : ""}OT)` : ""}</h2><div class="sub">at ${esc(snapName(snap, b.home))}</div></div><button class="btn" data-act="closeModal">Close</button></div>
+      ${tbl(b.away)}${tbl(b.home)}</div></div>`;
+  }
+  function logoPanel() {
+    const S = GM.S;
+    const rows = [["league", "League logo", leagueMark() || `<span class="badge big" style="background:var(--court)">LG</span>`], ...S.teams.filter((t) => t.active).concat(S.teams.filter((t) => !t.active)).map((t) => [t.fid, `${t.city} ${t.name}${t.active ? "" : " (defunct)"}`, badge(t.fid, true)])];
+    return `<section class="panel"><h2>Logos</h2>
+      <div class="prose"><p>Add an image for the league or any team, including expansion teams. Logos are stored only in this browser. They aren't part of the app's code on GitHub, and they travel with your save code if you copy it.</p></div>
+      <div class="tablewrap"><table><tbody>${rows.map(([key, label, prev]) => `<tr><td>${prev}</td><td>${esc(label)}</td><td><label class="btn small" style="display:inline-block">Upload<input type="file" accept="image/*" data-logo="${key}" hidden></label> ${logos[key] ? `<button class="btn small" data-act="clearLogo" data-key="${key}">Remove</button>` : ""}</td></tr>`).join("")}</tbody></table></div></section>`;
+  }
   function renderSettings() {
     const S = GM.S;
     $("#view").innerHTML = `<div class="grid2">
@@ -1517,17 +1693,17 @@ window.NAME_POOL = {
         <p><b>Teams.</b> The sim runs every front office: contenders trade youth for veterans, rebuilders do the reverse, and every team drafts, re-signs and signs free agents under your cap.</p>
         <p><b>Money.</b> The data has no salaries. Caps before 2026 are rough estimates, and salaries scale with the cap you set.</p>
         <p class="muted">Courtside is a fan-made simulator and is not affiliated with or endorsed by the WNBA, its teams or its players.</p>
-      </div></section></div>`;
+      </div></section></div>${logoPanel()}`;
   }
 
   // ---------- render ----------
   function render() {
     renderTop();
     if (!GM.S) { renderSetup(); $("#modal").innerHTML = ""; return; }
-    const views = { office: renderOffice, standings: renderStandings, playoffs: renderPlayoffs, teams: renderTeams, players: renderPlayers, leaders: renderLeaders, draft: renderDraft, moves: renderMoves, history: renderHistory, league: renderLeague, settings: renderSettings };
+    const views = { office: renderOffice, schedule: renderSchedule, standings: renderStandings, playoffs: renderPlayoffs, teams: renderTeams, players: renderPlayers, leaders: renderLeaders, draft: renderDraft, moves: renderMoves, history: renderHistory, league: renderLeague, settings: renderSettings };
     (views[ui.tab] || renderOffice)();
     const m = ui.modal;
-    $("#modal").innerHTML = !m ? "" : m.type === "player" ? playerModal(m.id) : teamModal(m.id);
+    $("#modal").innerHTML = !m ? "" : m.type === "player" ? playerModal(m.id) : m.type === "box" ? boxModal(m.season, m.id) : teamModal(m.id);
   }
   const val = (id) => $("#" + id)?.value;
   const numv = (id) => +val(id);
@@ -1538,6 +1714,10 @@ window.NAME_POOL = {
       case "tab": ui.tab = el.dataset.tab; ui.modal = null; ui.confirm = null; window.scrollTo(0, 0); break;
       case "newLeague": GM.newLeague(ui.setup.year, { realCareers: $("#optReal").checked, followHistory: $("#optHist").checked }); ui.tab = "office"; window.scrollTo(0, 0); toast(`Welcome, Commissioner. The ${ui.setup.year} season awaits.`); break;
       case "player": ui.modal = { type: "player", id: +id }; break;
+      case "box": ui.modal = { type: "box", season: +el.dataset.season, id: el.dataset.gid }; break;
+      case "schedView": ui.sched.view = el.dataset.v; break;
+      case "teamSched": ui.sched = { season: GM.S.season, team: id, view: "regular" }; ui.tab = "schedule"; ui.modal = null; window.scrollTo(0, 0); break;
+      case "clearLogo": delete logos[el.dataset.key]; saveLogos(); toast("Logo removed."); break;
       case "team": ui.modal = { type: "team", id }; ui.confirm = null; break;
       case "closeModal": ui.modal = null; ui.confirm = null; break;
       case "sort": { const k = el.dataset.key, c = el.dataset.col, cur = ui.sort[k]; ui.sort[k] = { col: c, dir: cur && cur.col === c ? -cur.dir : -1, get: getters[c] }; break; }
@@ -1561,9 +1741,9 @@ window.NAME_POOL = {
       case "fold": { const r = GM.foldTeam(id); ui.confirm = null; toast(r.ok ? "Franchise folded. The dispersal draft is done." : r.msg, !r.ok); break; }
       case "cancel": ui.confirm = null; break;
       case "leaders": ui.leaders = el.dataset.c; break;
-      case "copySave": { const txt = JSON.stringify(S); navigator.clipboard.writeText(txt).then(() => toast("Save code copied."), () => { $("#importText").value = txt; $("#importText").select(); toast("Copy was blocked: the code is selected in the box. Copy it manually.", true); }); return; }
-      case "downloadSave": { const a2 = document.createElement("a"); a2.href = URL.createObjectURL(new Blob([JSON.stringify(S)], { type: "application/json" })); a2.download = `courtside-${S.startYear}-${S.season}.json`; a2.click(); return; }
-      case "importText": try { const o = JSON.parse(val("importText")); if (!o.teams || !o.players || !o.rules) throw 0; GM.importState(o); ui.tab = "office"; toast("League loaded."); } catch (e) { toast("That isn't a Courtside save code.", true); return; } break;
+      case "copySave": { const txt = JSON.stringify({ ...S, _logos: logos }); navigator.clipboard.writeText(txt).then(() => toast("Save code copied."), () => { $("#importText").value = txt; $("#importText").select(); toast("Copy was blocked: the code is selected in the box. Copy it manually.", true); }); return; }
+      case "downloadSave": { const a2 = document.createElement("a"); a2.href = URL.createObjectURL(new Blob([JSON.stringify({ ...S, _logos: logos })], { type: "application/json" })); a2.download = `courtside-${S.startYear}-${S.season}.json`; a2.click(); return; }
+      case "importText": try { const o = JSON.parse(val("importText")); if (!o.teams || !o.players || !o.rules) throw 0; if (o._logos) { logos = o._logos; saveLogos(); } delete o._logos; GM.importState(o); ui.tab = "office"; toast("League loaded."); } catch (e) { toast("That isn't a Courtside save code.", true); return; } break;
       case "askNew": ui.confirm = "new"; break;
       case "newGame": ui.confirm = null; GM.clearSave(); break;
       default: return;
@@ -1588,7 +1768,18 @@ window.NAME_POOL = {
     else if (el.id === "newsKind") { ui.newsKind = el.value; render(); }
     else if (el.id === "pteam") { ui.players.team = el.value; render(); }
     else if (el.id === "txTeam") { ui.txTeam = el.value; render(); }
-    else if (el.id === "importFile" && el.files[0]) { const r = new FileReader(); r.onload = () => { try { const o = JSON.parse(r.result); if (!o.rules) throw 0; GM.importState(o); ui.tab = "office"; toast("League loaded."); render(); } catch (err) { toast("That file isn't a Courtside save.", true); } }; r.readAsText(el.files[0]); }
+    else if (el.id === "schedSeason") { ui.sched.season = +el.value; render(); }
+    else if (el.id === "schedTeam") { ui.sched.team = el.value; render(); }
+    else if (el.dataset && el.dataset.logo && el.files && el.files[0]) {
+      const key = el.dataset.logo;
+      readLogo(el.files[0], (url) => {
+        if (!url) { toast("That file couldn't be read as an image.", true); return; }
+        logos[key] = url;
+        if (!saveLogos()) { delete logos[key]; toast("Browser storage is full; the logo wasn't saved.", true); return; }
+        toast("Logo saved in this browser."); render();
+      });
+    }
+    else if (el.id === "importFile" && el.files[0]) { const r = new FileReader(); r.onload = () => { try { const o = JSON.parse(r.result); if (!o.rules) throw 0; if (o._logos) { logos = o._logos; saveLogos(); } delete o._logos; GM.importState(o); ui.tab = "office"; toast("League loaded."); render(); } catch (err) { toast("That file isn't a Courtside save.", true); } }; r.readAsText(el.files[0]); }
   });
   document.addEventListener("input", (e) => {
     if (e.target.id === "setupRange") { const s = $("#setupYear"); if (s) s.value = e.target.value; }

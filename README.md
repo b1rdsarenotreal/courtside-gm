@@ -23,6 +23,8 @@ Fan-made. Not affiliated with or endorsed by the WNBA, its teams or its players.
 - **Real draft classes:** players enter the draft in their real draft year, so Sue Bird arrives in 2002, Candace Parker in 2008 and Caitlin Clark in 2024. Generated prospects fill the remaining picks and every class after 2026.
 - **Real career arcs** (on by default): each season, a real player's rating follows how she actually played that year. After 2026, or in seasons she didn't play, normal simulated development takes over.
 - AI front offices handle drafting, re-signing, free agency under your cap, and trades. Contending teams buy veterans and rebuilding teams collect youth.
+- **Schedule tab** covering every season. Browse by day or by team (with a running record), plus playoff series game by game. Every game's score is kept for the life of the league. Full box scores, with team totals and shooting splits, are kept for the current and previous season.
+- **Your own logos.** Upload an image for the league or any team in Save & info. Logos are stored only in your browser, never in this repo.
 - Game-by-game simulation with box scores, injuries, standings, playoffs, awards (MVP, DPOY, ROY, Finals MVP, All-League), transactions and a league record book. The record book compares your alternate history with what really happened.
 
 ## Play

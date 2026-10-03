@@ -561,25 +561,26 @@
     return `<span class="tx-player">${ovr(pp.o)}<span class="tx-pn">${name}<span class="sub">${esc(pp.pos || "")} · age ${pp.a}</span></span></span>`;
   }
   const txContract = (c) => (c && c.sal ? `<span class="tx-contract">${money(c.sal)}<span> × ${c.yrs} yr${c.yrs === 1 ? "" : "s"}</span></span>` : "");
-  function txCard(x) {
-    const type = x.type === "dispersal" ? "expansion" : x.type;
-    if (!x.type) return `<div class="tx-card"><span class="tx-type">Move</span><div class="tx-body"><span>${esc(x.text)}</span></div></div>`;
-    let body = "";
-    if (x.type === "trade") {
-      const side = (fid, gets) => `<div class="tx-side"><div class="tx-team">${txTeam(x, fid)}<b>${txTeamName(x, fid)}</b><span class="sub">receive</span></div><div class="tx-players">${gets.map(txPlayer).join("")}</div></div>`;
-      body = `<div class="tx-trade">${side(x.a, x.aGets || [])}<div class="tx-swap" aria-hidden="true">⇄</div>${side(x.b, x.bGets || [])}</div>`;
-    } else if (x.type === "draft") {
-      body = `<div class="tx-line"><div class="tx-team">${txTeam(x, x.team)}<b>${txTeamName(x, x.team)}</b></div><span class="tx-pick">${x.draftYear || ""} · Rd ${x.round} · #${x.pick}</span><span class="tx-arrow">→</span>${txPlayer(x.p)}<span class="sub">${esc(x.p?.school || "")}${x.p && !x.p.real ? " · generated" : ""}</span><span class="spacer"></span>${txContract(x.c)}</div>`;
-    } else if (x.type === "sign" || x.type === "resign") {
-      body = `<div class="tx-line"><div class="tx-team">${txTeam(x, x.team)}<b>${txTeamName(x, x.team)}</b></div><span class="tx-arrow">←</span>${txPlayer(x.p)}<span class="spacer"></span>${txContract(x.c)}</div>`;
-    } else if (x.type === "waive" || x.type === "leave") {
-      body = `<div class="tx-line"><div class="tx-team">${txTeam(x, x.team)}<b>${txTeamName(x, x.team)}</b></div><span class="tx-arrow out">→</span>${txPlayer(x.p)}<span class="tx-arrow out">→</span><span class="chip">Free agency</span></div>`;
-    } else if (x.type === "expansion" || x.type === "dispersal") {
-      body = `<div class="tx-line"><div class="tx-team">${txTeam(x, x.from)}<span class="sub">${txTeamName(x, x.from)}</span></div><span class="tx-arrow">→</span>${txPlayer(x.p)}<span class="tx-arrow">→</span><div class="tx-team">${txTeam(x, x.team)}<b>${txTeamName(x, x.team)}</b></div><span class="spacer"></span>${txContract(x.c)}</div>`;
-    } else if (x.type === "retire") {
-      body = `<div class="tx-line">${txPlayer(x.p)}${x.team ? `<span class="sub">from</span><div class="tx-team">${txTeam(x, x.team)}<span class="sub">${txTeamName(x, x.team)}</span></div>` : `<span class="sub">as a free agent</span>`}<span class="spacer"></span><span class="sub">${x.seasons ? `${x.seasons} season${x.seasons === 1 ? "" : "s"}` : ""}${x.awards ? ` · ${x.awards} honor${x.awards === 1 ? "" : "s"}` : ""}</span></div>`;
-    } else body = `<span>${esc(x.text)}</span>`;
-    return `<div class="tx-card t-${type}"><span class="tx-type t-${type}">${TX_LABEL[x.type] || "Move"}</span><div class="tx-body">${body}</div></div>`;
+  // One table row per player moved: what happened, player, old team, new team, deal.
+  const TX_SHORT = { trade: "Trade", sign: "FA signing", resign: "Re-signed", draft: "Drafted", waive: "Released", leave: "Left in FA", expansion: "Expansion", dispersal: "Dispersal", retire: "Retired" };
+  const noTeam = (label) => `<span class="tx-none">${label}</span>`;
+  const txDeal = (c) => (c && c.sal ? `<b>${c.yrs}×</b> ${money(c.sal)}` : `<span class="muted">N/A</span>`);
+  function txRows(x) {
+    const back = x.type === "sign" && x.from && x.from === x.team; // returned to her old team in free agency
+    const type = x.type === "dispersal" ? "expansion" : back ? "resign" : x.type;
+    const badgeCell = `<td><span class="tx-type t-${type}">${back ? "Re-signed" : TX_SHORT[x.type] || "Move"}</span></td>`;
+    const team = (fid) => (fid ? `<span class="tx-team">${txTeam(x, fid)}<span class="tx-tname">${txTeamName(x, fid)}</span></span>` : noTeam("Free agent"));
+    const row = (pp, from, to, deal, extra = "") => `<tr>${badgeCell}<td>${txPlayer(pp)}${extra}</td><td>${from}</td><td class="tx-arrowcell">→</td><td>${to}</td><td class="num tx-deal">${deal}</td></tr>`;
+    switch (x.type) {
+      case "trade": return [...(x.aGets || []).map((pp) => row(pp, team(x.b), team(x.a), txDeal(pp.c))), ...(x.bGets || []).map((pp) => row(pp, team(x.a), team(x.b), txDeal(pp.c)))].join("");
+      case "sign": return row(x.p, x.from ? team(x.from) : noTeam("Free agent"), team(x.team), txDeal(x.c));
+      case "resign": return row(x.p, team(x.team), team(x.team), txDeal(x.c));
+      case "draft": return row(x.p, noTeam(esc(x.p?.school || "Draft")), team(x.team), txDeal(x.c), `<div class="sub">${x.draftYear || ""} draft · round ${x.round}, pick ${x.pick}${x.p && !x.p.real ? " · generated" : ""}</div>`);
+      case "waive": case "leave": return row(x.p, team(x.team), noTeam("Free agent"), `<span class="muted">N/A</span>`);
+      case "expansion": case "dispersal": return row(x.p, team(x.from), team(x.team), txDeal(x.c || x.p?.c));
+      case "retire": return row(x.p, x.team ? team(x.team) : noTeam("Free agent"), noTeam("Retired"), `<span class="muted">${x.seasons ? `${x.seasons} season${x.seasons === 1 ? "" : "s"}` : "N/A"}</span>`);
+      default: return `<tr>${badgeCell}<td colspan="5">${esc(x.text)}</td></tr>`;
+    }
   }
   function renderMoves() {
     const S = GM.S;
@@ -594,15 +595,15 @@
     let html = "", lastKey = "";
     for (const x of list) {
       const key = `${x.season}-${x.phase}`;
-      if (key !== lastKey) { html += `<div class="tx-group"><b>${x.season}</b> ${phaseOrder(x.phase)}</div>`; lastKey = key; }
-      html += txCard(x);
+      if (key !== lastKey) { html += `<tr class="tx-grouprow"><td colspan="6"><b>${x.season}</b> ${phaseOrder(x.phase)}</td></tr>`; lastKey = key; }
+      html += txRows(x);
     }
     $("#view").innerHTML = `<section class="panel">
       <div class="panel-head"><div><h2>Transactions</h2><div class="sub">${all.length} move${all.length === 1 ? "" : "s"}${f.team !== "all" ? ` involving the ${esc(GM.teamName(f.team))}` : ""}</div></div>
         <div class="row"><select id="txSeason" aria-label="Season"><option value="all">All seasons</option>${seasons.map((y) => `<option ${String(y) === String(f.season) ? "selected" : ""}>${y}</option>`).join("")}</select>
         <select id="txTeam" aria-label="Team filter"><option value="all">All teams</option>${S.teams.map((t) => `<option value="${t.fid}" ${f.team === t.fid ? "selected" : ""}>${esc(t.city)} ${esc(t.name)}</option>`).join("")}</select></div></div>
       <div class="tx-filters">${TX_TYPES.map(([k, l]) => `<button class="tx-filter t-${k} ${f.type === k ? "on" : ""}" data-act="txType" data-v="${k}">${l}${k !== "all" && counts[k] ? ` <span>${counts[k]}</span>` : ""}</button>`).join("")}</div>
-      <div class="tx-list">${html || `<div class="empty">No moves match these filters.</div>`}</div>
+      ${html ? `<div class="tablewrap"><table class="tx-table"><thead><tr><th>What happened</th><th>Player</th><th>From</th><th></th><th>To</th><th class="num">Deal</th></tr></thead><tbody>${html}</tbody></table></div>` : `<div class="empty">No moves match these filters.</div>`}
       ${all.length > list.length ? `<div class="row"><button class="btn" data-act="txMore">Show more (${all.length - list.length} left)</button></div>` : ""}
     </section>`;
   }

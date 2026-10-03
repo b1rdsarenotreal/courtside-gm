@@ -386,3 +386,17 @@ details summary { padding: 4px 0; }
 .tx-side { display: grid; gap: 6px; min-width: 0; }
 .tx-players { display: flex; flex-wrap: wrap; gap: 6px; }
 .tx-swap { font-size: 1.4rem; color: #6d4ad8; font-weight: 700; }
+
+/* transactions table */
+table.tx-table td { padding: 7px 10px; vertical-align: middle; }
+table.tx-table th { padding: 9px 10px; }
+.tx-grouprow td { background: var(--surface) !important; padding-top: 16px !important; border-bottom: 1px solid var(--line-strong); font-size: 0.78rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; font-weight: 600; }
+.tx-grouprow b { color: var(--ink); font-family: var(--font-display); font-size: 1.15rem; letter-spacing: 0.02em; margin-right: 6px; }
+table.tx-table .tx-type { display: inline-block; min-width: 96px; text-align: center; }
+table.tx-table .tx-player { background: none; border: 0; padding: 0; }
+.tx-tname { font-weight: 600; }
+.tx-none { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 0.84rem; }
+.tx-none::before { content: ""; width: 34px; height: 24px; border-radius: 6px; background: var(--surface-3); border: 1px dashed var(--line-strong); flex: none; }
+td.tx-arrowcell { color: var(--muted); width: 18px; text-align: center; padding-inline: 0 !important; }
+td.tx-deal { font-variant-numeric: tabular-nums; }
+td.tx-deal b { font-family: var(--font-display); font-size: 1.05rem; }

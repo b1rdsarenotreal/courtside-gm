@@ -147,7 +147,16 @@
   function log(text, fid, kind) { S.news.unshift({ season: S.season, day: S.day, phase: S.phase, text, team: fid || null, kind: kind || null }); if (S.news.length > 400) S.news.length = 400; }
   // Transactions are stored as structured entries (type, teams, players with a
   // snapshot of rating/age) so the Transactions page can draw them as cards.
-  const pSnap = (p) => ({ id: p.id, n: p.name, o: p.r.ovr, a: age(p), pos: p.pos });
+  // Last team a player belonged to (for free-agent signings): tracked by the
+  // sim, or for real players who start the league unsigned, their last real team.
+  function prevTeam(p) {
+    if (p.lastTeam) return p.lastTeam;
+    if (!p.real) return null;
+    const ys = realSeasons(p.id).filter((y) => y < S.season).sort((a, b) => b - a);
+    for (const y of ys) { const f = realLine(p.id, y)[F.fid]; if (T(f)) return f; }
+    return null;
+  }
+  const pSnap = (p) => ({ id: p.id, n: p.name, o: p.r.ovr, a: age(p), pos: p.pos, c: p.c && p.c.sal ? { sal: p.c.sal, yrs: p.c.yrs } : null });
   const tSnap = (fid) => { const t = T(fid); return t ? { abbr: t.abbr, name: `${t.city} ${t.name}`, color: t.color } : null; };
   function txn(text, fid, d = {}) {
     const inv = [...new Set([fid, ...(d.involved || [])].filter(Boolean))];
@@ -938,7 +947,7 @@
     if (activeTeams().length <= 2) return { ok: false, msg: "The league needs at least two teams." };
     const t = T(fid); t.active = false; t.folded = S.season;
     const pool = roster(fid).sort((a, b) => b.r.ovr - a.r.ovr);
-    pool.forEach((p) => (p.team = null));
+    pool.forEach((p) => { p.lastTeam = p.team; p.team = null; });
     log(`${fromHistory ? "" : "Commissioner's decision: "}the ${t.city} ${t.name} fold. Their ${pool.length} players go to a dispersal draft.`, fid, "office");
     // Dispersal draft: worst teams pick first; teams pass when the player wouldn't help.
     const order = standings().reverse().map((x) => x.fid);
@@ -961,7 +970,7 @@
     pool.filter((p) => !p.team).forEach((p) => { p.c = { sal: 0, yrs: 0 }; p.ask = askingContract(p); });
     rankCache = null; save(); return { ok: true };
   }
-  function releaseToFA(p, fid) { txn(`${teamName(fid)} waive ${p.name}.`, fid, { type: "waive", p: pSnap(p) }); p.team = null; p.c = { sal: 0, yrs: 0 }; p.ask = askingContract(p); }
+  function releaseToFA(p, fid) { txn(`${teamName(fid)} waive ${p.name}.`, fid, { type: "waive", p: pSnap(p) }); p.lastTeam = p.team; p.team = null; p.c = { sal: 0, yrs: 0 }; p.ask = askingContract(p); }
 
   // ---------- offseason ----------
   function toOffseason() {
@@ -1100,7 +1109,7 @@
       if (p.c.yrs > 0) continue;
       const fid = p.team, keep = (p.r.ovr >= 58 || (age(p) <= 25 && p.r.pot >= 65)) && age(p) <= 34 && rnd() < 0.72;
       if (keep) { const a = askingContract(p); p.c = { sal: a.sal, yrs: a.yrs }; txn(`${teamName(fid)} re-sign ${p.name}.`, fid, { type: "resign", p: pSnap(p), c: { sal: a.sal, yrs: a.yrs } }); }
-      else { txn(`${p.name} leaves the ${teamName(fid)} in free agency.`, fid, { type: "leave", p: pSnap(p) }); p.team = null; p.c = { sal: 0, yrs: 0 }; if (p.r.ovr >= 70) log(`${p.name} becomes a free agent, leaving the ${teamName(fid)}.`, fid, "fa"); }
+      else { txn(`${p.name} leaves the ${teamName(fid)} in free agency.`, fid, { type: "leave", p: pSnap(p) }); p.lastTeam = p.team; p.team = null; p.c = { sal: 0, yrs: 0 }; if (p.r.ovr >= 70) log(`${p.name} becomes a free agent, leaving the ${teamName(fid)}.`, fid, "fa"); }
     }
   }
   function develop() {
@@ -1168,7 +1177,7 @@
         if (ask.sal <= capSpace(t.fid) || (need && ask.sal <= econ().min * 1.3)) {
           p.team = t.fid; p.c = { sal: Math.min(ask.sal, Math.max(econ().min, capSpace(t.fid))), yrs: ask.yrs }; p.ask = null; n++;
           p.acq = `Signed ${S.season}`;
-          txn(`${teamName(t.fid)} sign ${p.name} (${fmtMoney(p.c.sal)} × ${p.c.yrs}).`, t.fid, { type: "sign", p: pSnap(p), c: { sal: p.c.sal, yrs: p.c.yrs } });
+          txn(`${teamName(t.fid)} sign ${p.name} (${fmtMoney(p.c.sal)} × ${p.c.yrs}).`, t.fid, { type: "sign", from: prevTeam(p), involved: [prevTeam(p)].filter(Boolean), p: pSnap(p), c: { sal: p.c.sal, yrs: p.c.yrs } });
           if (p.r.ovr >= 70) log(`${p.name} signs with the ${teamName(t.fid)}.`, t.fid, "fa");
           if (!need) break;
         }
@@ -1177,14 +1186,14 @@
   }
   function aiRosterFix(fid, initial) {
     let ps = roster(fid).sort((a, b) => a.r.ovr - b.r.ovr);
-    while (ps.length > S.rules.rosterMax) { const p = ps.shift(); if (!initial) txn(`${teamName(fid)} waive ${p.name}.`, fid, { type: "waive", p: pSnap(p) }); p.team = null; p.c = { sal: 0, yrs: 0 }; p.ask = askingContract(p); }
+    while (ps.length > S.rules.rosterMax) { const p = ps.shift(); if (!initial) txn(`${teamName(fid)} waive ${p.name}.`, fid, { type: "waive", p: pSnap(p) }); p.lastTeam = p.team; p.team = null; p.c = { sal: 0, yrs: 0 }; p.ask = askingContract(p); }
     let guard = 0;
     while (roster(fid).length < S.rules.rosterMin && guard++ < 20) {
       const fa = freeAgents().sort((a, b) => b.r.ovr - a.r.ovr)[0];
       if (!fa) { const g = genPlayer({ age: 24, ovrMean: 42, ovrSd: 4, potRoom: 2 }); S.players[g.id] = g; continue; }
       const sal = Math.max(econ().min, Math.min(fa.ask?.sal || econ().min, capSpace(fid)));
       fa.team = fid; fa.c = { sal: Math.round(sal / 1000) * 1000, yrs: 1 }; fa.ask = null;
-      if (!initial) txn(`${teamName(fid)} sign ${fa.name}.`, fid, { type: "sign", p: pSnap(fa), c: { sal: fa.c.sal, yrs: fa.c.yrs } });
+      if (!initial) txn(`${teamName(fid)} sign ${fa.name}.`, fid, { type: "sign", from: prevTeam(fa), involved: [prevTeam(fa)].filter(Boolean), p: pSnap(fa), c: { sal: fa.c.sal, yrs: fa.c.yrs } });
     }
   }
   // AI-to-AI trades: contenders buy current production from rebuilders who want youth.

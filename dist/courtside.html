@@ -412,6 +412,25 @@ td.tx-arrowcell { color: var(--muted); width: 18px; text-align: center; padding-
 td.tx-deal { font-variant-numeric: tabular-nums; }
 td.tx-deal b { font-family: var(--font-display); font-size: 1.05rem; }
 
+/* ---------- trophies (user-uploaded award images) ---------- */
+.trophy { display: inline-block; object-fit: contain; flex: none; vertical-align: middle; }
+.trophy.xs { height: 16px; width: auto; max-width: 22px; margin-right: 5px; }
+.trophy.sm { height: 28px; width: auto; max-width: 36px; margin-right: 4px; }
+.trophy.md { height: 38px; width: auto; max-width: 40px; }
+.trophy.lg { height: 64px; width: auto; max-width: 90px; }
+.award-pill { align-items: center; }
+.award-pill .trophy.xs { margin-right: 1px; }
+.award-tile { position: relative; }
+.award-tile.has-trophy { padding-right: 52px; }
+.award-tile .trophy.md { position: absolute; right: 10px; top: 10px; }
+.team-list .eyebrow { display: inline-flex; align-items: center; }
+.th-trophy { display: inline-flex; align-items: center; }
+.trophy-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; margin-top: 12px; }
+.trophy-slot { display: grid; justify-items: center; align-content: start; gap: 8px; text-align: center; padding: 14px 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); }
+.trophy-slot b { font-size: 0.86rem; }
+.trophy-slot .row { justify-content: center; }
+.trophy-empty { width: 64px; height: 64px; border-radius: 12px; border: 2px dashed var(--line); background: var(--surface-3); }
+
 </style>
 </head>
 <body>
@@ -537,6 +556,7 @@ window.NAME_POOL = {
         S.players[p.id] = p;
       }
     }
+    updateGenCap();
     // Free-agent pool depth.
     for (let i = 0; i < 20; i++) { const p = genPlayer({ age: 24 + Math.floor(rnd() * 8), ovrMean: 44, ovrSd: 5, potRoom: 2 }); p.ask = askingContract(p); S.players[p.id] = p; }
     for (const t of S.teams) aiRosterFix(t.fid, true);
@@ -564,13 +584,37 @@ window.NAME_POOL = {
     const big = pos.includes("C") ? 1 : pos === "F" || pos === "F-C" ? 0.5 : 0;
     const sk = (b) => Math.round(clamp(b + randn() * 9, 25, 95));
     const id = S.nextPid++;
-    return {
+    const p = {
       id, name: pick(NP.first) + " " + pick(NP.last), pos, ht: Math.round(70 + big * 7 + randn() * 2), born: S.season - age,
       school: pick(NP.schools), real: false, team: null,
       r: { ovr, pot: Math.round(clamp(ovr + Math.max(0, potRoom * (0.6 + 0.6 * rnd())), ovr, 95)),
         ins: sk(ovr - 4 + big * 10), thr: sk(ovr - 2 - big * 14), fts: sk(ovr - 2), ply: sk(ovr - 4 - big * 10), reb: sk(ovr - 8 + big * 22), def: sk(ovr - 2 + big * 4), ath: sk(ovr) },
       c: { sal: 0, yrs: 0 }, inj: 0, injType: null, stats: {}, po: {}, career: [], awards: [], draft: null,
     };
+    capGen(p);
+    return p;
+  }
+
+  // Generated players are filler. While real players make up the league they never rate
+  // above the bottom third of real rostered players (S.genCap). Once the real players
+  // have all but retired (well after 2026) the cap lifts slowly so the league can go on.
+  const realRostered = () => Object.values(S.players).filter((p) => p.real && p.team && !p.retired);
+  function updateGenCap() {
+    const o = realRostered().map((p) => p.r.ovr).sort((a, b) => a - b);
+    const prev = S.genCap;
+    if (o.length >= 60) {
+      const c = o[Math.floor(o.length * 0.3)];
+      S.genCap = S.season > LAST_REAL && prev != null ? Math.max(prev, c) : c; // after the real era it never sinks
+    } else if (prev != null) S.genCap = o.length < 15 ? null : Math.min(99, prev + 2);
+    else if (S.season <= LAST_REAL) S.genCap = 52;
+  }
+  const genCapOn = () => S.genCap != null;
+  function capGen(p) {
+    const cap = S.genCap;
+    if (p.real || cap == null) return;
+    const cut = p.r.ovr - cap;
+    if (cut > 0) { p.r.ovr = cap; for (const k of SKILLS) p.r[k] = Math.max(20, p.r[k] - cut); }
+    p.r.pot = Math.min(p.r.pot, cap);
   }
 
   // ---------- accessors ----------
@@ -1161,9 +1205,14 @@ window.NAME_POOL = {
   }
   function computeAwards() {
     const y = S.season;
-    const rows = Object.values(S.players).filter((p) => p.team && !p.retired).map((p) => ({ p, s: perGame(p) })).filter((x) => x.s);
+    // While real players make up the league, awards go only to them (generated players
+    // are filler). If no real player qualifies for an award (e.g. no real rookies after 2026),
+    // generated players are considered for it.
+    const allRows = Object.values(S.players).filter((p) => p.team && !p.retired).map((p) => ({ p, s: perGame(p) })).filter((x) => x.s);
+    const realRows = genCapOn() ? allRows.filter((x) => x.p.real) : allRows;
+    const rows = realRows;
     const elig = rows.filter((x) => x.s.gp >= minGames());
-    for (const x of rows) { x.ind = indScore(x.s); x.wp = teamWp(x.s.team); }
+    for (const x of allRows) { x.ind = indScore(x.s); x.wp = teamWp(x.s.team); }
     const sortBy = (arr, f) => arr.slice().sort((a, b) => f(b) - f(a));
     // MVP: production plus team success. A player on a losing team needs a
     // season well clear of everyone else to win.
@@ -1176,7 +1225,8 @@ window.NAME_POOL = {
     };
     const mvpList = sortBy(elig.filter((x) => x.s.min >= 28), mvpScore);
     const allWnba = sortBy(elig.filter((x) => x.s.min >= 22), (x) => x.ind + 10 * (x.wp - 0.5));
-    const rookies = rows.filter((x) => isRookie(x.p) && x.s.gp >= S.rules.games * 0.4);
+    const rk = (arr) => arr.filter((x) => isRookie(x.p) && x.s.gp >= S.rules.games * 0.4);
+    const rookies = rk(rows).length ? rk(rows) : rk(allRows);
     const royList = sortBy(rookies, (x) => x.ind);
     const defList = sortBy(elig, (x) => defScore(x.p, x.s));
     const sixth = sortBy(elig.filter((x) => x.s.gs <= x.s.gp * 0.35), (x) => x.ind);
@@ -1198,7 +1248,8 @@ window.NAME_POOL = {
   }
   const isRookie = (p) => p.firstSeason === S.season || (S.season === S.startYear && p.real && Math.min(...realSeasons(p.id)) === S.season);
   function finalsMvp(fid) {
-    const ps = roster(fid).filter((p) => p.po[S.season]);
+    let ps = roster(fid).filter((p) => p.po[S.season]);
+    if (genCapOn() && ps.some((p) => p.real)) ps = ps.filter((p) => p.real);
     const sc = (p) => { const x = p.po[S.season]; return (x.pts + 1.1 * x.reb + 1.5 * x.ast + 2 * (x.stl + x.blk) - x.tov) / Math.max(1, x.gp); };
     ps.sort((a, b) => sc(b) - sc(a));
     return ps[0]?.id;
@@ -1454,6 +1505,7 @@ window.NAME_POOL = {
     aiFreeAgency(1); aiFreeAgency(1);
     aiTrades(3);
     for (const t of activeTeams()) { Object.assign(t, { w: 0, l: 0, hw: 0, hl: 0, pf: 0, pa: 0, streak: 0, maxStreak: 0 }); aiRosterFix(t.fid); t.dead = t.dead.filter((d) => d.season >= S.season); }
+    for (const p of Object.values(S.players)) if (!p.retired && !p.prospect) p.unsigned = p.team ? 0 : (p.unsigned || 0) + 1;
     S.prevBoxes = { season: S.season - 1, boxes: S.boxes };
     S.playoffs = null; S.awards = null; S.boxes = {}; S.schedule = []; S.day = 0;
     pruneSave();
@@ -1578,6 +1630,18 @@ window.NAME_POOL = {
         if (p.potCap) { p.r.pot = Math.min(p.r.pot, p.potCap); p.r.ovr = Math.min(p.r.ovr, p.potCap); }
       }
     }
+    updateGenCap();
+    for (const p of Object.values(S.players)) if (!p.real && !p.retired) capGen(p);
+  }
+  // Age-based retirement odds for generated players, and for real players once past the real data.
+  function agePr(p, a) {
+    let pr = 0;
+    if (a >= 35) pr = 0.35 + (a - 35) * 0.15;
+    else if (a >= 32) pr = p.r.ovr < 60 ? 0.3 : 0.05;
+    else if (a >= 30 && p.r.ovr < 48) pr = 0.15;
+    if (!p.team && a >= 29 && p.r.ovr < 50) pr += 0.4;
+    if (p.team && p.c.yrs > 0) pr *= 0.4; // under contract: usually plays it out
+    return pr;
   }
   function retirements() {
     for (const p of Object.values(S.players)) {
@@ -1588,12 +1652,12 @@ window.NAME_POOL = {
         const ss = realSeasons(p.id), lastS = Math.max(...ss);
         if (S.season > lastS && lastS < LAST_REAL) pr = S.season > lastS + 1 ? 0.9 : 0.7; // retired in real life
         else if (S.season <= LAST_REAL && !realLine(p.id, S.season) && a >= 33) pr = 0.6; // stepped away in real life
-        else if (S.season > LAST_REAL) pr = a >= 35 ? 0.35 + (a - 35) * 0.15 : a >= 32 && p.r.ovr < 60 ? 0.3 : 0.03;
-      } else {
-        if (a >= 35) pr = 0.35 + (a - 35) * 0.15; else if (a >= 32) pr = p.r.ovr < 60 ? 0.3 : 0.05;
-        if (!p.team && a >= 29 && p.r.ovr < 50) pr += 0.4;
-        if (p.team && p.c.yrs > 0) pr *= 0.4;
-      }
+        else if (S.season > LAST_REAL) pr = agePr(p, a); // past the real data: she ages like anyone else
+      } else pr = agePr(p, a);
+      // Nobody signs you for two straight seasons: most players call it a career.
+      const futureReal = p.real && S.opts.realCareers && S.season <= LAST_REAL && realSeasons(p.id).some((x) => x > S.season);
+      if (!p.team && (p.unsigned || 0) >= 2 && !futureReal) pr = Math.max(pr, a >= 27 ? 0.85 : 0.55);
+      if (a >= 41 && !futureReal) pr = 1;
       if (!p.team && p.undrafted && rnd() < 0.5) pr = 1;
       if (rnd() < pr) {
         const fid = p.team;
@@ -1710,7 +1774,7 @@ window.NAME_POOL = {
       KV.set("league", S).then((ok) => { saveError = ok ? null : "Couldn't save in this browser. Use Copy save code to keep your league."; if (!ok) lsSave(); });
     }, 250);
   }
-  function load() { try { const raw = localStorage.getItem(SAVE_KEY); if (!raw) return null; S = JSON.parse(raw); rankCache = null; return S; } catch (e) { return null; } }
+  function load() { try { const raw = localStorage.getItem(SAVE_KEY); if (!raw) return null; S = JSON.parse(raw); rankCache = null; migrate(); return S; } catch (e) { return null; } }
   // Async start-up: open IndexedDB, migrate any old localStorage save, load the league.
   async function init() {
     const ok = await KV.open();
@@ -1722,7 +1786,7 @@ window.NAME_POOL = {
       try { const raw = localStorage.getItem(SAVE_KEY); if (raw) { st = JSON.parse(raw); await KV.set("league", st); } } catch (e) {}
     }
     try { localStorage.removeItem(SAVE_KEY); } catch (e) {}
-    if (st) { S = st; rankCache = null; }
+    if (st) { S = st; rankCache = null; migrate(); }
     return S;
   }
   // Write any pending save immediately (used when the page is hidden or closed).
@@ -1731,7 +1795,13 @@ window.NAME_POOL = {
     document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flush(); });
     window.addEventListener && window.addEventListener("pagehide", flush);
   }
-  function importState(o) { S = o; rankCache = null; save(); }
+  function importState(o) { S = o; rankCache = null; migrate(); save(); }
+  // Older saves: bring generated players under the cap right away.
+  function migrate() {
+    if (!S || !S.players || S.genCap !== undefined) return;
+    updateGenCap();
+    for (const p of Object.values(S.players)) if (!p.real && !p.retired) capGen(p);
+  }
   function clearSave() { try { localStorage.removeItem(SAVE_KEY); } catch (e) {} KV.del("league"); S = null; rankCache = null; }
   const getKV = (k) => KV.get(k), setKV = (k, v) => KV.set(k, v), hasDB = () => !!KV.db;
   function fmtMoney(x) { return Math.abs(x) >= 1e6 ? "$" + (x / 1e6).toFixed(2) + "M" : "$" + Math.round(x / 1000) + "K"; }
@@ -1868,7 +1938,7 @@ window.NAME_POOL = {
   }
   // Clean up an uploaded logo: remove a solid background (e.g. the white box
   // around a JPG), trim empty margins, and keep the logo's own shape.
-  function processLogo(src) {
+  function processLogo(src, maxSide = 160) {
     return new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
@@ -1908,8 +1978,8 @@ window.NAME_POOL = {
           const pad = Math.round(Math.max(x1 - x0, y1 - y0) * 0.03);
           x0 = Math.max(0, x0 - pad); y0 = Math.max(0, y0 - pad); x1 = Math.min(W - 1, x1 + pad); y1 = Math.min(H - 1, y1 + pad);
           const cw = x1 - x0 + 1, ch = y1 - y0 + 1;
-          // 3. Store small: longest side 160px, original proportions.
-          const k = Math.min(1, 160 / Math.max(cw, ch));
+          // 3. Store small: longest side 160px (trophies 320px), original proportions.
+          const k = Math.min(1, maxSide / Math.max(cw, ch));
           const out = document.createElement("canvas"); out.width = Math.max(1, Math.round(cw * k)); out.height = Math.max(1, Math.round(ch * k));
           const o = out.getContext("2d"); o.imageSmoothingQuality = "high";
           o.drawImage(c, x0, y0, cw, ch, 0, 0, out.width, out.height);
@@ -1920,9 +1990,9 @@ window.NAME_POOL = {
       img.src = src;
     });
   }
-  function readLogo(file, cb) {
+  function readLogo(file, cb, maxSide) {
     const fr = new FileReader();
-    fr.onload = () => processLogo(fr.result).then(cb);
+    fr.onload = () => processLogo(fr.result, maxSide).then(cb);
     fr.onerror = () => cb(null);
     fr.readAsDataURL(file);
   }
@@ -1939,6 +2009,10 @@ window.NAME_POOL = {
   // Badge from a season's team snapshot (names and colors as they were that year).
   const snapBadge = (snap, fid, big) => { const t = snap[fid] || GM.T(fid) || { abbr: fid, color: "#666" }; return logos[fid] ? `<span class="logo${big ? " big" : ""}" title="${esc(t.abbr)}"><img src="${logos[fid]}" alt="${esc(t.abbr)}"></span>` : badgeRaw(t.abbr, t.color, big); };
   const snapName = (snap, fid) => { const t = snap[fid] || GM.T(fid); return t ? `${t.city} ${t.name}` : fid; };
+  // Trophy images: uploaded like logos, stored under "tr:<award>".
+  const TROPHIES = [["champion", "Championship trophy"], ["mvp", "MVP"], ["finalsMvp", "Finals MVP"], ["dpoy", "Defensive Player of the Year"], ["roy", "Rookie of the Year"], ["smoy", "Sixth Player of the Year"], ["mip", "Most Improved Player"], ["allFirst", "All-WNBA First Team"], ["allSecond", "All-WNBA Second Team"], ["allDef", "All-Defensive Team"], ["allRookie", "All-Rookie Team"]];
+  const TROPHY_BY_NAME = { "Champion": "champion", "MVP": "mvp", "Finals MVP": "finalsMvp", "Defensive Player of the Year": "dpoy", "Rookie of the Year": "roy", "Sixth Player of the Year": "smoy", "Most Improved Player": "mip", "All-WNBA First Team": "allFirst", "All-WNBA Second Team": "allSecond", "All-Defensive Team": "allDef", "All-Rookie Team": "allRookie" };
+  const trophy = (k, size = "md") => (k && logos["tr:" + k] ? `<img class="trophy ${size}" src="${logos["tr:" + k]}" alt="">` : "");
   const leagueMark = () => logos.league ? `<span class="logo big"><img src="${logos.league}" alt="League logo"></span>` : "";
   const badgeRaw = (abbr, color, big) => `<span class="badge${big ? " big" : ""}" style="background:${color}">${esc(abbr)}</span>`;
   const plink = (p) => `<button class="plink" data-act="player" data-id="${p.id}">${esc(p.name)}</button><span class="pos">${esc(p.pos)}</span>`;
@@ -2085,7 +2159,7 @@ window.NAME_POOL = {
       <div class="row"><button class="btn" data-act="sim" data-n="1">Sim 1 day</button><button class="btn" data-act="sim" data-n="7">Sim 1 week</button><button class="btn primary" data-act="sim" data-n="999">Sim to playoffs</button></div></section>`;
     if (S.phase === "playoffs") {
       const po = S.playoffs;
-      return `<section class="callout"><div class="panel-head"><h3>${po.champion ? `The ${esc(GM.teamName(po.champion))} win the ${S.season} title` : `${S.season} playoffs`}</h3>${po.champion ? `<span class="sub">Finals MVP: ${esc(GM.P(po.finalsMvp)?.name || "–")}</span>` : ""}</div>
+      return `<section class="callout"><div class="panel-head"><h3 class="row">${po.champion ? `${trophy("champion", "sm")}The ${esc(GM.teamName(po.champion))} win the ${S.season} title` : `${S.season} playoffs`}</h3>${po.champion ? `<span class="sub">Finals MVP: ${esc(GM.P(po.finalsMvp)?.name || "–")}</span>` : ""}</div>
         ${bracketChart(S.playoffs, GM.seasonGames(S.season).teams)}${awardsBlock(S.awards)}
         <div class="row">${po.champion ? `<button class="btn primary" data-act="toOffseason">Open the offseason</button>` : `<button class="btn" data-act="po" data-mode="game">Sim one game</button><button class="btn" data-act="po" data-mode="round">Sim round</button><button class="btn primary" data-act="po" data-mode="all">Sim to champion</button>`}</div></section>`;
     }
@@ -2211,7 +2285,7 @@ window.NAME_POOL = {
       return { m: { hi: champs[0] || null, lo: champs[1] || null, wh: 0, wl: 0, winner: null, pending: true }, br: null };
     };
     const champBox = (x, y, fid) => {
-      cards.push(`<div class="bk-champ" style="left:${x}px;top:${y}px;width:${CW}px"><span class="eyebrow">${po.projected ? "Projected bracket" : "Champion"}</span>${fid ? `<div class="row" style="justify-content:center">${snapBadge(snap, fid)}<b>${esc(snapName(snap, fid))}</b></div>` : `<span class="muted">To be decided</span>`}</div>`);
+      cards.push(`<div class="bk-champ" style="left:${x}px;top:${y}px;width:${CW}px"><span class="eyebrow">${po.projected ? "Projected bracket" : "Champion"}</span>${fid ? `<div class="row" style="justify-content:center">${!po.projected ? trophy("champion", "sm") : ""}${snapBadge(snap, fid)}<b>${esc(snapName(snap, fid))}</b></div>` : `<span class="muted">To be decided</span>`}</div>`);
     };
     if (brs.length === 2) {
       // Conferences face each other; the Finals sit in the middle.
@@ -2228,7 +2302,7 @@ window.NAME_POOL = {
       link(b.x, b.y, fx + CW, fy, !!B.champion);
       champBox(fx, fy + CH / 2 + 18, po.champion);
       W = fx + CW + HG + Math.max(1, B.R || 0) * col - HG;
-      H = Math.max(H, H / 2 + CH / 2 + 88);
+      H = Math.max(H, H / 2 + CH / 2 + 120);
     } else if (brs.length === 1) {
       const A = brs[0], R = A.R || 0;
       H = Math.max(1, 2 ** Math.max(0, R - 1)) * unit;
@@ -2236,7 +2310,7 @@ window.NAME_POOL = {
       const cx = a.x + CW + HG;
       link(a.x + a.w, a.y, cx, a.y, !!A.champion);
       champBox(cx, a.y - 30, po.champion);
-      W = cx + CW; H = Math.max(H, a.y - TOP + 60);
+      W = cx + CW; H = Math.max(H, a.y - TOP + 90);
     } else {
       // Three or more conferences: each conference bracket, then the Finals bracket.
       let y = TOP, maxW = 0;
@@ -2440,7 +2514,7 @@ window.NAME_POOL = {
     const titles = S.teams.filter((t) => t.titles).sort((a, b) => b.titles - a.titles);
     $("#view").innerHTML = `<section class="panel"><h2>League history</h2>
       ${S.history.length ? `<div class="tablewrap"><table><thead><tr><th>Season</th><th>Champion</th><th>Runner-up</th><th>Finals MVP</th><th>MVP</th><th>DPOY</th><th>ROY</th><th>Best record</th><th>Real life best record</th></tr></thead><tbody>
-      ${S.history.map((h) => `<tr><td>${h.season}</td><td>${badge(h.champion)} ${esc(h.champName)}</td><td class="muted">${esc(h.runnerName)}</td><td>${nm(h.finalsMvp)}</td><td>${nm(h.mvp)}</td><td>${nm(h.dpoy)}</td><td>${nm(h.roy)}</td><td>${badge(h.best)} ${esc(h.bestRec)}</td><td class="muted">${h.real ? `${esc(h.real.team)} ${esc(h.real.rec)}` : "–"}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">Finish a season to start the record book.</div>`}</section>
+      ${S.history.map((h) => `<tr><td>${h.season}</td><td>${trophy("champion", "xs")}${badge(h.champion)} ${esc(h.champName)}</td><td class="muted">${esc(h.runnerName)}</td><td>${nm(h.finalsMvp)}</td><td>${nm(h.mvp)}</td><td>${nm(h.dpoy)}</td><td>${nm(h.roy)}</td><td>${badge(h.best)} ${esc(h.bestRec)}</td><td class="muted">${h.real ? `${esc(h.real.team)} ${esc(h.real.rec)}` : "–"}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">Finish a season to start the record book.</div>`}</section>
       ${titles.length ? `<section class="panel"><h3>Titles by franchise</h3><div class="tablewrap"><table><tbody>${titles.map((t) => `<tr><td>${badge(t.fid)} ${esc(t.city)} ${esc(t.name)}${t.active ? "" : ' <span class="chip">defunct</span>'}</td><td class="num"><b>${t.titles}</b></td></tr>`).join("")}</tbody></table></div></section>` : ""}`;
   }
 
@@ -2641,6 +2715,11 @@ window.NAME_POOL = {
       <div class="box-top">${line}${compare}</div>
       ${tbl(b.away)}${tbl(b.home)}</div></div>`;
   }
+  function trophyPanel() {
+    return `<section class="panel" id="trophies"><h2>Trophies</h2>
+      <div class="prose"><p>Add an image for each award and for the championship. They show on the Awards page, in player profiles, on the playoff bracket and in the history. Like logos, the background is removed automatically and the images are stored only in this browser.</p></div>
+      <div class="trophy-grid">${TROPHIES.map(([k, l]) => `<div class="trophy-slot">${logos["tr:" + k] ? trophy(k, "lg") : `<span class="trophy-empty" aria-hidden="true"></span>`}<b>${esc(l)}</b><div class="row"><label class="btn small">Upload<input type="file" accept="image/*" data-logo="tr:${k}" hidden></label>${logos["tr:" + k] ? `<button class="btn small" data-act="clearLogo" data-key="tr:${k}">Remove</button>` : ""}</div></div>`).join("")}</div></section>`;
+  }
   function logoPanel() {
     const S = GM.S;
     const rows = [["league", "League logo", leagueMark() || `<span class="badge big" style="background:var(--court)">LG</span>`], ...S.teams.filter((t) => t.active).concat(S.teams.filter((t) => !t.active)).map((t) => [t.fid, `${t.city} ${t.name}${t.active ? "" : " (defunct)"}`, badge(t.fid, true)])];
@@ -2657,7 +2736,7 @@ window.NAME_POOL = {
     for (const s of list) { const m = /^(\d{4}) (.+)$/.exec(s); if (!m) continue; const name = m[2] === "All-League" ? "All-WNBA First Team" : m[2]; (g[name] ||= []).push(m[1]); }
     const names = Object.keys(g).sort((a, b) => (AWARD_ORDER.indexOf(a) + 99) % 99 - (AWARD_ORDER.indexOf(b) + 99) % 99);
     return `<div class="awards-sum">${names.map((n) => { const ys = [...new Set(g[n])].sort(); const lab = AWARD_SHORT[n] || n;
-      return `<span class="award-pill ${n === "MVP" || n === "Champion" || n === "Finals MVP" ? "gold" : ""}"><b>${ys.length > 1 ? `${ys.length}x ` : ""}${esc(lab)}</b> <span>(${ys.map((y) => "'" + y.slice(2)).join(", ")})</span></span>`; }).join("")}</div>`;
+      return `<span class="award-pill ${n === "MVP" || n === "Champion" || n === "Finals MVP" ? "gold" : ""}">${trophy(TROPHY_BY_NAME[n], "xs")}<b>${ys.length > 1 ? `${ys.length}x ` : ""}${esc(lab)}</b> <span>(${ys.map((y) => "'" + y.slice(2)).join(", ")})</span></span>`; }).join("")}</div>`;
   }
   function awardEntries() {
     const S = GM.S;
@@ -2670,21 +2749,22 @@ window.NAME_POOL = {
     const list = awardEntries();
     const who = (id, withTeam = true) => { const p = id && GM.P(id); if (!p) return `<span class="muted">–</span>`; return `${plink(p)}`; };
     const SINGLE = [["mvp", "MVP"], ["finalsMvp", "Finals MVP"], ["dpoy", "Defensive Player"], ["roy", "Rookie of the Year"], ["smoy", "Sixth Player"], ["mip", "Most Improved"]];
+    const anyTrophy = TROPHIES.some(([k]) => logos["tr:" + k]);
     const TEAMS = [["allFirst", "All-WNBA First Team"], ["allSecond", "All-WNBA Second Team"], ["allDef", "All-Defensive Team"], ["allRookie", "All-Rookie Team"]];
     if (!list.length) { $("#view").innerHTML = `<section class="panel"><h2>Awards</h2><div class="empty">Awards are handed out when the regular season ends.</div></section>`; return; }
     const view = ui.awardsView || "season";
     let body;
     if (view === "award") {
-      body = `<section class="panel"><div class="tablewrap"><table><thead><tr><th>Season</th>${SINGLE.map(([, l]) => `<th>${l}</th>`).join("")}</tr></thead><tbody>
+      body = `<section class="panel"><div class="tablewrap"><table><thead><tr><th>Season</th>${SINGLE.map(([k, l]) => `<th><span class="th-trophy">${trophy(k, "xs")}${l}</span></th>`).join("")}</tr></thead><tbody>
         ${list.map((h) => `<tr><td><b>${h.season}</b></td>${SINGLE.map(([k]) => `<td>${who(h[k])}</td>`).join("")}</tr>`).join("")}</tbody></table></div></section>`;
     } else {
       body = list.map((h) => `<section class="panel award-season">
-        <div class="panel-head"><h2>${h.season}</h2>${h.champion ? `<span class="row">${badge(h.champion)} <span class="sub">${esc(h.champName || GM.teamName(h.champion))} won the title</span></span>` : h.pending ? `<span class="chip accent">Playoffs in progress</span>` : ""}</div>
-        <div class="award-grid">${SINGLE.map(([k, l]) => `<div class="award-tile"><span class="eyebrow">${l}</span><div>${who(h[k])}</div>${h[k] && GM.P(h[k]) ? `<span class="sub">${esc(GM.T(GM.P(h[k]).team)?.abbr || "")}</span>` : ""}</div>`).join("")}</div>
-        <div class="team-grid">${TEAMS.map(([k, l]) => `<div class="team-list"><span class="eyebrow">${l}</span>${(h[k] || []).length ? `<ol>${h[k].map((id) => `<li>${who(id)}</li>`).join("")}</ol>` : `<div class="muted">–</div>`}</div>`).join("")}</div>
+        <div class="panel-head"><h2>${h.season}</h2>${h.champion ? `<span class="row">${trophy("champion", "sm")}${badge(h.champion)} <span class="sub">${esc(h.champName || GM.teamName(h.champion))} won the title</span></span>` : h.pending ? `<span class="chip accent">Playoffs in progress</span>` : ""}</div>
+        <div class="award-grid">${SINGLE.map(([k, l]) => `<div class="award-tile${logos["tr:" + k] ? " has-trophy" : ""}">${trophy(k, "md")}<span class="eyebrow">${l}</span><div>${who(h[k])}</div>${h[k] && GM.P(h[k]) ? `<span class="sub">${esc(GM.T(GM.P(h[k]).team)?.abbr || "")}</span>` : ""}</div>`).join("")}</div>
+        <div class="team-grid">${TEAMS.map(([k, l]) => `<div class="team-list"><span class="eyebrow">${trophy(k, "xs")}${l}</span>${(h[k] || []).length ? `<ol>${h[k].map((id) => `<li>${who(id)}</li>`).join("")}</ol>` : `<div class="muted">–</div>`}</div>`).join("")}</div>
       </section>`).join("");
     }
-    $("#view").innerHTML = `<div class="seg"><button class="${view === "season" ? "on" : ""}" data-act="awardsView" data-v="season">By season</button><button class="${view === "award" ? "on" : ""}" data-act="awardsView" data-v="award">By award</button></div>${body}`;
+    $("#view").innerHTML = `<div class="row" style="justify-content:space-between"><div class="seg"><button class="${view === "season" ? "on" : ""}" data-act="awardsView" data-v="season">By season</button><button class="${view === "award" ? "on" : ""}" data-act="awardsView" data-v="award">By award</button></div><button class="btn small" data-act="tab" data-tab="settings" data-scroll="trophies">${anyTrophy ? "Change trophy images" : "Add trophy images"}</button></div>${body}`;
   }
   function renderRecords() {
     const S = GM.S, rb = GM.recordBook(), view = ui.recView || "game";
@@ -2731,7 +2811,7 @@ window.NAME_POOL = {
         <p><b>Teams.</b> The sim runs every front office: contenders trade youth for veterans, rebuilders do the reverse, and every team drafts, re-signs and signs free agents under your cap.</p>
         <p><b>Money.</b> The data has no salaries. Caps before 2026 are rough estimates, and salaries scale with the cap you set.</p>
         <p class="muted">Courtside is a fan-made simulator and is not affiliated with or endorsed by the WNBA, its teams or its players.</p>
-      </div></section></div>${logoPanel()}`;
+      </div></section></div>${logoPanel()}${trophyPanel()}`;
   }
 
   // ---------- render ----------
@@ -2749,7 +2829,7 @@ window.NAME_POOL = {
   function act(a, el) {
     const S = GM.S, id = el.dataset.id;
     switch (a) {
-      case "tab": if (el.dataset.tab === "playoffs") ui.poSeason = GM.S.season; ui.tab = el.dataset.tab; ui.modal = null; ui.confirm = null; window.scrollTo(0, 0); break;
+      case "tab": if (el.dataset.tab === "playoffs") ui.poSeason = GM.S.season; ui.tab = el.dataset.tab; ui.modal = null; ui.confirm = null; window.scrollTo(0, 0); if (el.dataset.scroll) { const id = el.dataset.scroll; setTimeout(() => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" }), 60); } break;
       case "newLeague": GM.newLeague(ui.setup.year, { realCareers: $("#optReal").checked, followHistory: $("#optHist").checked }); ui.tab = "office"; window.scrollTo(0, 0); toast(`Welcome, Commissioner. The ${ui.setup.year} season awaits.`); break;
       case "player": ui.modal = { type: "player", id: +id }; break;
       case "box": ui.modal = { type: "box", season: +el.dataset.season, id: el.dataset.gid }; break;
@@ -2818,14 +2898,15 @@ window.NAME_POOL = {
     else if (el.id === "schedTeam") { ui.sched.team = el.value; render(); }
     else if (el.dataset && el.dataset.logo && el.files && el.files[0]) {
       const key = el.dataset.logo;
+      const isTrophy = key.startsWith("tr:");
       readLogo(el.files[0], (url) => {
         if (!url) { toast("That file couldn't be read as an image.", true); return; }
         logos[key] = url;
         saveLogos().then((ok) => {
-          if (!ok) { delete logos[key]; toast("This browser wouldn't save the logo. Try a smaller image, or check that site storage is allowed.", true); render(); return; }
-          toast("Logo saved in this browser."); render();
+          if (!ok) { delete logos[key]; toast("This browser wouldn't save the image. Try a smaller image, or check that site storage is allowed.", true); render(); return; }
+          toast(isTrophy ? "Trophy saved in this browser." : "Logo saved in this browser."); render();
         });
-      });
+      }, isTrophy ? 320 : 160);
     }
     else if (el.id === "importFile" && el.files[0]) { const r = new FileReader(); r.onload = () => { try { const o = JSON.parse(r.result); if (!o.rules) throw 0; if (o._logos) { logos = o._logos; saveLogos(); } delete o._logos; GM.importState(o); ui.tab = "office"; toast("League loaded."); render(); } catch (err) { toast("That file isn't a Courtside save.", true); } }; r.readAsText(el.files[0]); }
   });

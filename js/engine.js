@@ -97,6 +97,7 @@
         S.players[p.id] = p;
       }
     }
+    updateGenCap();
     // Free-agent pool depth.
     for (let i = 0; i < 20; i++) { const p = genPlayer({ age: 24 + Math.floor(rnd() * 8), ovrMean: 44, ovrSd: 5, potRoom: 2 }); p.ask = askingContract(p); S.players[p.id] = p; }
     for (const t of S.teams) aiRosterFix(t.fid, true);
@@ -124,13 +125,37 @@
     const big = pos.includes("C") ? 1 : pos === "F" || pos === "F-C" ? 0.5 : 0;
     const sk = (b) => Math.round(clamp(b + randn() * 9, 25, 95));
     const id = S.nextPid++;
-    return {
+    const p = {
       id, name: pick(NP.first) + " " + pick(NP.last), pos, ht: Math.round(70 + big * 7 + randn() * 2), born: S.season - age,
       school: pick(NP.schools), real: false, team: null,
       r: { ovr, pot: Math.round(clamp(ovr + Math.max(0, potRoom * (0.6 + 0.6 * rnd())), ovr, 95)),
         ins: sk(ovr - 4 + big * 10), thr: sk(ovr - 2 - big * 14), fts: sk(ovr - 2), ply: sk(ovr - 4 - big * 10), reb: sk(ovr - 8 + big * 22), def: sk(ovr - 2 + big * 4), ath: sk(ovr) },
       c: { sal: 0, yrs: 0 }, inj: 0, injType: null, stats: {}, po: {}, career: [], awards: [], draft: null,
     };
+    capGen(p);
+    return p;
+  }
+
+  // Generated players are filler. While real players make up the league they never rate
+  // above the bottom third of real rostered players (S.genCap). Once the real players
+  // have all but retired (well after 2026) the cap lifts slowly so the league can go on.
+  const realRostered = () => Object.values(S.players).filter((p) => p.real && p.team && !p.retired);
+  function updateGenCap() {
+    const o = realRostered().map((p) => p.r.ovr).sort((a, b) => a - b);
+    const prev = S.genCap;
+    if (o.length >= 60) {
+      const c = o[Math.floor(o.length * 0.3)];
+      S.genCap = S.season > LAST_REAL && prev != null ? Math.max(prev, c) : c; // after the real era it never sinks
+    } else if (prev != null) S.genCap = o.length < 15 ? null : Math.min(99, prev + 2);
+    else if (S.season <= LAST_REAL) S.genCap = 52;
+  }
+  const genCapOn = () => S.genCap != null;
+  function capGen(p) {
+    const cap = S.genCap;
+    if (p.real || cap == null) return;
+    const cut = p.r.ovr - cap;
+    if (cut > 0) { p.r.ovr = cap; for (const k of SKILLS) p.r[k] = Math.max(20, p.r[k] - cut); }
+    p.r.pot = Math.min(p.r.pot, cap);
   }
 
   // ---------- accessors ----------
@@ -721,9 +746,14 @@
   }
   function computeAwards() {
     const y = S.season;
-    const rows = Object.values(S.players).filter((p) => p.team && !p.retired).map((p) => ({ p, s: perGame(p) })).filter((x) => x.s);
+    // While real players make up the league, awards go only to them (generated players
+    // are filler). If no real player qualifies for an award (e.g. no real rookies after 2026),
+    // generated players are considered for it.
+    const allRows = Object.values(S.players).filter((p) => p.team && !p.retired).map((p) => ({ p, s: perGame(p) })).filter((x) => x.s);
+    const realRows = genCapOn() ? allRows.filter((x) => x.p.real) : allRows;
+    const rows = realRows;
     const elig = rows.filter((x) => x.s.gp >= minGames());
-    for (const x of rows) { x.ind = indScore(x.s); x.wp = teamWp(x.s.team); }
+    for (const x of allRows) { x.ind = indScore(x.s); x.wp = teamWp(x.s.team); }
     const sortBy = (arr, f) => arr.slice().sort((a, b) => f(b) - f(a));
     // MVP: production plus team success. A player on a losing team needs a
     // season well clear of everyone else to win.
@@ -736,7 +766,8 @@
     };
     const mvpList = sortBy(elig.filter((x) => x.s.min >= 28), mvpScore);
     const allWnba = sortBy(elig.filter((x) => x.s.min >= 22), (x) => x.ind + 10 * (x.wp - 0.5));
-    const rookies = rows.filter((x) => isRookie(x.p) && x.s.gp >= S.rules.games * 0.4);
+    const rk = (arr) => arr.filter((x) => isRookie(x.p) && x.s.gp >= S.rules.games * 0.4);
+    const rookies = rk(rows).length ? rk(rows) : rk(allRows);
     const royList = sortBy(rookies, (x) => x.ind);
     const defList = sortBy(elig, (x) => defScore(x.p, x.s));
     const sixth = sortBy(elig.filter((x) => x.s.gs <= x.s.gp * 0.35), (x) => x.ind);
@@ -758,7 +789,8 @@
   }
   const isRookie = (p) => p.firstSeason === S.season || (S.season === S.startYear && p.real && Math.min(...realSeasons(p.id)) === S.season);
   function finalsMvp(fid) {
-    const ps = roster(fid).filter((p) => p.po[S.season]);
+    let ps = roster(fid).filter((p) => p.po[S.season]);
+    if (genCapOn() && ps.some((p) => p.real)) ps = ps.filter((p) => p.real);
     const sc = (p) => { const x = p.po[S.season]; return (x.pts + 1.1 * x.reb + 1.5 * x.ast + 2 * (x.stl + x.blk) - x.tov) / Math.max(1, x.gp); };
     ps.sort((a, b) => sc(b) - sc(a));
     return ps[0]?.id;
@@ -1014,6 +1046,7 @@
     aiFreeAgency(1); aiFreeAgency(1);
     aiTrades(3);
     for (const t of activeTeams()) { Object.assign(t, { w: 0, l: 0, hw: 0, hl: 0, pf: 0, pa: 0, streak: 0, maxStreak: 0 }); aiRosterFix(t.fid); t.dead = t.dead.filter((d) => d.season >= S.season); }
+    for (const p of Object.values(S.players)) if (!p.retired && !p.prospect) p.unsigned = p.team ? 0 : (p.unsigned || 0) + 1;
     S.prevBoxes = { season: S.season - 1, boxes: S.boxes };
     S.playoffs = null; S.awards = null; S.boxes = {}; S.schedule = []; S.day = 0;
     pruneSave();
@@ -1138,6 +1171,18 @@
         if (p.potCap) { p.r.pot = Math.min(p.r.pot, p.potCap); p.r.ovr = Math.min(p.r.ovr, p.potCap); }
       }
     }
+    updateGenCap();
+    for (const p of Object.values(S.players)) if (!p.real && !p.retired) capGen(p);
+  }
+  // Age-based retirement odds for generated players, and for real players once past the real data.
+  function agePr(p, a) {
+    let pr = 0;
+    if (a >= 35) pr = 0.35 + (a - 35) * 0.15;
+    else if (a >= 32) pr = p.r.ovr < 60 ? 0.3 : 0.05;
+    else if (a >= 30 && p.r.ovr < 48) pr = 0.15;
+    if (!p.team && a >= 29 && p.r.ovr < 50) pr += 0.4;
+    if (p.team && p.c.yrs > 0) pr *= 0.4; // under contract: usually plays it out
+    return pr;
   }
   function retirements() {
     for (const p of Object.values(S.players)) {
@@ -1148,12 +1193,12 @@
         const ss = realSeasons(p.id), lastS = Math.max(...ss);
         if (S.season > lastS && lastS < LAST_REAL) pr = S.season > lastS + 1 ? 0.9 : 0.7; // retired in real life
         else if (S.season <= LAST_REAL && !realLine(p.id, S.season) && a >= 33) pr = 0.6; // stepped away in real life
-        else if (S.season > LAST_REAL) pr = a >= 35 ? 0.35 + (a - 35) * 0.15 : a >= 32 && p.r.ovr < 60 ? 0.3 : 0.03;
-      } else {
-        if (a >= 35) pr = 0.35 + (a - 35) * 0.15; else if (a >= 32) pr = p.r.ovr < 60 ? 0.3 : 0.05;
-        if (!p.team && a >= 29 && p.r.ovr < 50) pr += 0.4;
-        if (p.team && p.c.yrs > 0) pr *= 0.4;
-      }
+        else if (S.season > LAST_REAL) pr = agePr(p, a); // past the real data: she ages like anyone else
+      } else pr = agePr(p, a);
+      // Nobody signs you for two straight seasons: most players call it a career.
+      const futureReal = p.real && S.opts.realCareers && S.season <= LAST_REAL && realSeasons(p.id).some((x) => x > S.season);
+      if (!p.team && (p.unsigned || 0) >= 2 && !futureReal) pr = Math.max(pr, a >= 27 ? 0.85 : 0.55);
+      if (a >= 41 && !futureReal) pr = 1;
       if (!p.team && p.undrafted && rnd() < 0.5) pr = 1;
       if (rnd() < pr) {
         const fid = p.team;
@@ -1270,7 +1315,7 @@
       KV.set("league", S).then((ok) => { saveError = ok ? null : "Couldn't save in this browser. Use Copy save code to keep your league."; if (!ok) lsSave(); });
     }, 250);
   }
-  function load() { try { const raw = localStorage.getItem(SAVE_KEY); if (!raw) return null; S = JSON.parse(raw); rankCache = null; return S; } catch (e) { return null; } }
+  function load() { try { const raw = localStorage.getItem(SAVE_KEY); if (!raw) return null; S = JSON.parse(raw); rankCache = null; migrate(); return S; } catch (e) { return null; } }
   // Async start-up: open IndexedDB, migrate any old localStorage save, load the league.
   async function init() {
     const ok = await KV.open();
@@ -1282,7 +1327,7 @@
       try { const raw = localStorage.getItem(SAVE_KEY); if (raw) { st = JSON.parse(raw); await KV.set("league", st); } } catch (e) {}
     }
     try { localStorage.removeItem(SAVE_KEY); } catch (e) {}
-    if (st) { S = st; rankCache = null; }
+    if (st) { S = st; rankCache = null; migrate(); }
     return S;
   }
   // Write any pending save immediately (used when the page is hidden or closed).
@@ -1291,7 +1336,13 @@
     document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") flush(); });
     window.addEventListener && window.addEventListener("pagehide", flush);
   }
-  function importState(o) { S = o; rankCache = null; save(); }
+  function importState(o) { S = o; rankCache = null; migrate(); save(); }
+  // Older saves: bring generated players under the cap right away.
+  function migrate() {
+    if (!S || !S.players || S.genCap !== undefined) return;
+    updateGenCap();
+    for (const p of Object.values(S.players)) if (!p.real && !p.retired) capGen(p);
+  }
   function clearSave() { try { localStorage.removeItem(SAVE_KEY); } catch (e) {} KV.del("league"); S = null; rankCache = null; }
   const getKV = (k) => KV.get(k), setKV = (k, v) => KV.set(k, v), hasDB = () => !!KV.db;
   function fmtMoney(x) { return Math.abs(x) >= 1e6 ? "$" + (x / 1e6).toFixed(2) + "M" : "$" + Math.round(x / 1000) + "K"; }

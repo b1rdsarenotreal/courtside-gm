@@ -400,3 +400,22 @@ table.tx-table .tx-player { background: none; border: 0; padding: 0; }
 td.tx-arrowcell { color: var(--muted); width: 18px; text-align: center; padding-inline: 0 !important; }
 td.tx-deal { font-variant-numeric: tabular-nums; }
 td.tx-deal b { font-family: var(--font-display); font-size: 1.05rem; }
+
+/* ---------- trophies (user-uploaded award images) ---------- */
+.trophy { display: inline-block; object-fit: contain; flex: none; vertical-align: middle; }
+.trophy.xs { height: 16px; width: auto; max-width: 22px; margin-right: 5px; }
+.trophy.sm { height: 28px; width: auto; max-width: 36px; margin-right: 4px; }
+.trophy.md { height: 38px; width: auto; max-width: 40px; }
+.trophy.lg { height: 64px; width: auto; max-width: 90px; }
+.award-pill { align-items: center; }
+.award-pill .trophy.xs { margin-right: 1px; }
+.award-tile { position: relative; }
+.award-tile.has-trophy { padding-right: 52px; }
+.award-tile .trophy.md { position: absolute; right: 10px; top: 10px; }
+.team-list .eyebrow { display: inline-flex; align-items: center; }
+.th-trophy { display: inline-flex; align-items: center; }
+.trophy-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; margin-top: 12px; }
+.trophy-slot { display: grid; justify-items: center; align-content: start; gap: 8px; text-align: center; padding: 14px 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); }
+.trophy-slot b { font-size: 0.86rem; }
+.trophy-slot .row { justify-content: center; }
+.trophy-empty { width: 64px; height: 64px; border-radius: 12px; border: 2px dashed var(--line); background: var(--surface-3); }

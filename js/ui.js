@@ -116,6 +116,8 @@
   const TROPHIES = [["champion", "Championship trophy"], ["mvp", "MVP"], ["finalsMvp", "Finals MVP"], ["dpoy", "Defensive Player of the Year"], ["roy", "Rookie of the Year"], ["smoy", "Sixth Player of the Year"], ["mip", "Most Improved Player"], ["allFirst", "All-WNBA First Team"], ["allSecond", "All-WNBA Second Team"], ["allDef", "All-Defensive Team"], ["allRookie", "All-Rookie Team"]];
   const TROPHY_BY_NAME = { "Champion": "champion", "MVP": "mvp", "Finals MVP": "finalsMvp", "Defensive Player of the Year": "dpoy", "Rookie of the Year": "roy", "Sixth Player of the Year": "smoy", "Most Improved Player": "mip", "All-WNBA First Team": "allFirst", "All-WNBA Second Team": "allSecond", "All-Defensive Team": "allDef", "All-Rookie Team": "allRookie" };
   const trophy = (k, size = "md") => (k && logos["tr:" + k] ? `<img class="trophy ${size}" src="${logos["tr:" + k]}" alt="">` : "");
+  // Playoffs / Finals event logos, uploaded with the team logos ("lg:playoffs", "lg:finals").
+  const eventLogo = (k, size = "md") => (logos["lg:" + k] ? `<img class="event-logo ${size}" src="${logos["lg:" + k]}" alt="${k === "finals" ? "Finals" : "Playoffs"} logo">` : "");
   const leagueMark = () => logos.league ? `<span class="logo big"><img src="${logos.league}" alt="League logo"></span>` : "";
   const badgeRaw = (abbr, color, big) => `<span class="badge${big ? " big" : ""}" style="background:${color}">${esc(abbr)}</span>`;
   const plink = (p) => `<button class="plink" data-act="player" data-id="${p.id}">${esc(p.name)}</button><span class="pos">${esc(p.pos)}</span>`;
@@ -329,7 +331,12 @@
     return out;
   }
   function bracketChart(po, snap) {
-    const { CW, CH, VG, HG, TOP } = BK, unit = CH + VG, col = CW + HG;
+    const { CW, CH, VG, HG } = BK, unit = CH + VG, col = CW + HG;
+    const finLogo = !!logos["lg:finals"], TOP = finLogo ? 74 : BK.TOP;
+    const labTxt = (t) => (t === "Finals" && finLogo ? eventLogo("finals", "bk") : esc(t));
+    // Narrow screens: stack the two conferences instead of facing them across the page.
+    const avail = (document.getElementById("view")?.clientWidth || window.innerWidth) - 40;
+    const narrow = avail < 900;
     const cards = [], paths = [], labels = [];
     const nm = (fid) => (snap[fid] || GM.T(fid) || { name: fid }).name;
     const row = (br, fid, w, isWin, isLose, showW) => {
@@ -368,7 +375,7 @@
       const X = (r) => (dir === "ltr" ? x0 + r * col : x0 + (R - 1 - r) * col);
       const C = (r, i) => yb + (i + 0.5) * 2 ** r * unit;
       rounds.forEach((rd, r) => {
-        labels.push(`<div class="bk-label" style="left:${X(r)}px;top:${y0 - TOP}px;width:${CW}px">${esc(roundName(br, r, conf))}<span>${boOf(br, r)}</span></div>`);
+        labels.push(`<div class="bk-label" style="left:${X(r)}px;top:${y0 - TOP}px;width:${CW}px">${labTxt(roundName(br, r, conf))}<span>${boOf(br, r)}</span></div>`);
         rd.forEach((m, i) => {
           card(X(r), C(r, i) - CH / 2, m, br);
           if (r > 0) for (const k of [2 * i, 2 * i + 1]) {
@@ -390,7 +397,22 @@
     const champBox = (x, y, fid) => {
       cards.push(`<div class="bk-champ" style="left:${x}px;top:${y}px;width:${CW}px"><span class="eyebrow">${po.projected ? "Projected bracket" : "Champion"}</span>${fid ? `<div class="row" style="justify-content:center">${!po.projected ? trophy("champion", "sm") : ""}${snapBadge(snap, fid)}<b>${esc(snapName(snap, fid))}</b></div>` : `<span class="muted">To be decided</span>`}</div>`);
     };
-    if (brs.length === 2) {
+    if (brs.length === 2 && narrow) {
+      // Conferences stacked, the Finals to their right.
+      const [A, B] = brs, R = Math.max(A.R || 0, B.R || 0);
+      const hgt = (br) => Math.max(1, 2 ** Math.max(0, (br.R || 1) - 1)) * unit;
+      const a = draw(A, (R - Math.max(1, A.R || 0)) * col, TOP, hgt(A), "ltr", true);
+      const yB = TOP + hgt(A) + TOP + 10;
+      const b = draw(B, (R - Math.max(1, B.R || 0)) * col, yB, hgt(B), "ltr", true);
+      const fx = Math.max(1, R) * col, fy = (a.y + b.y) / 2;
+      const f = finalMatch([A.champion, B.champion]);
+      labels.push(`<div class="bk-label" style="left:${fx}px;top:${fy - CH / 2 - TOP}px;width:${CW}px">${labTxt("Finals")}<span>${f.m.bestOf ? `Best of ${f.m.bestOf}` : `Best of ${GM.S.rules.finalsBo}`}</span></div>`);
+      card(fx, fy - CH / 2, f.m, f.br);
+      link(a.x + a.w, a.y, fx, fy, !!A.champion);
+      link(b.x + b.w, b.y, fx, fy, !!B.champion);
+      champBox(fx, fy + CH / 2 + 18, po.champion);
+      W = fx + CW; H = Math.max(yB + hgt(B), fy + CH / 2 + 130) - TOP;
+    } else if (brs.length === 2) {
       // Conferences face each other; the Finals sit in the middle.
       const [A, B] = brs, R = Math.max(A.R || 0, B.R || 0);
       H = Math.max(2 ** Math.max(0, (A.R || 1) - 1), 2 ** Math.max(0, (B.R || 1) - 1)) * unit;
@@ -399,7 +421,7 @@
       const b = draw(B, fx + CW + HG, TOP, H, "rtl", true);
       const fy = TOP + H / 2;
       const f = finalMatch([A.champion, B.champion]);
-      labels.push(`<div class="bk-label" style="left:${fx}px;width:${CW}px">Finals<span>${f.m.bestOf ? `Best of ${f.m.bestOf}` : `Best of ${GM.S.rules.finalsBo}`}</span></div>`);
+      labels.push(`<div class="bk-label" style="left:${fx}px;width:${CW}px">${labTxt("Finals")}<span>${f.m.bestOf ? `Best of ${f.m.bestOf}` : `Best of ${GM.S.rules.finalsBo}`}</span></div>`);
       card(fx, fy - CH / 2, f.m, f.br);
       link(a.x + a.w, a.y, fx, fy, !!A.champion);
       link(b.x, b.y, fx + CW, fy, !!B.champion);
@@ -431,7 +453,8 @@
       champBox(fRes.x + CW + HG, fRes.y - 30, po.champion);
       W = fRes.x + 2 * CW + HG; H = y;
     }
-    return `<div class="bk-wrap"><div class="bk" style="width:${W}px;height:${H + TOP + 10}px">
+    // Scaled to fit its panel after rendering (fitBrackets): never scrolls sideways.
+    return `<div class="bk-wrap"><div class="bk" data-w="${W}" data-h="${H + TOP + 10}" style="width:${W}px;height:${H + TOP + 10}px">
       <svg width="${W}" height="${H + TOP + 10}" aria-hidden="true">${paths.join("")}</svg>${labels.join("")}${cards.join("")}</div></div>`;
   }
 
@@ -443,13 +466,13 @@
     const live = sb && sb.live && ui.poSeason === S.season;
     const fmt = `${r.playoffTeams} teams seeded ${r.seeding === "conference" ? "by conference" : "league-wide"}, best of ${r.earlyBo} early, ${r.semisBo} in the semifinals, ${r.finalsBo} in the Finals`;
     $("#view").innerHTML = `<section class="panel">
-      <div class="panel-head"><div><h2>${ui.poSeason ?? S.season} playoffs</h2><div class="sub">${sb && sb.po.projected ? `If the season ended today. Format: ${fmt}.` : live ? `Format: ${fmt}.` : "Final bracket."}</div></div>
+      <div class="panel-head"><div class="po-title">${eventLogo("playoffs", "lg")}<div><h2>${ui.poSeason ?? S.season} playoffs</h2><div class="sub">${sb && sb.po.projected ? `If the season ended today. Format: ${fmt}.` : live ? `Format: ${fmt}.` : "Final bracket."}</div></div></div>
         ${years.length > 1 ? `<select id="poSeason" aria-label="Season">${years.map((y) => `<option ${y === ui.poSeason ? "selected" : ""}>${y}</option>`).join("")}</select>` : ""}</div>
       ${sb ? bracketChart(sb.po, sb.teams) : `<div class="empty">No bracket for this season.</div>`}
       ${live && S.phase === "playoffs" && !S.playoffs.champion ? `<div class="row"><button class="btn" data-act="po" data-mode="game">Sim one game</button><button class="btn" data-act="po" data-mode="round">Sim round</button><button class="btn primary" data-act="po" data-mode="all">Sim to champion</button></div>` : ""}
     </section>
     ${(() => { if (!sb || sb.po.projected) return ""; const sg = GM.seasonGames(ui.poSeason); const ser = sg ? sg.playoffs : [];
-      return ser.length ? `<section class="panel"><div class="panel-head"><h2>Series results</h2><span class="sub">Every game, with box scores${Object.keys(sg.boxes).length ? "" : " (kept for the current and previous season)"}</span></div><div class="series-grid">${ser.slice().reverse().map((s) => seriesCard(sg, s)).join("")}</div></section>` : ""; })()}`;
+      return ser.length ? `<section class="panel"><div class="panel-head"><h2>Series results</h2><span class="sub">Every game, with box scores${Object.keys(sg.boxes).length ? "" : " (kept for the current and previous season)"}</span></div>${seriesColumns(sg, ser)}</section>` : ""; })()}`;
   }
 
   // ---------- teams ----------
@@ -714,6 +737,48 @@
     return `<tr><td>${snapBadge(snap, g.away)} <span class="${aw ? "rt" : "muted"}">${esc(snap[g.away]?.name || g.away)}</span></td><td class="num score-cell ${aw ? "rt" : "muted"}">${g.played ? g.as : ""}</td><td class="muted at">@</td><td>${snapBadge(snap, g.home)} <span class="${hw ? "rt" : "muted"}">${esc(snap[g.home]?.name || g.home)}</span></td><td class="num score-cell ${hw ? "rt" : "muted"}">${g.played ? g.hs : ""}</td><td class="muted">${g.ot ? (g.ot > 1 ? g.ot : "") + "OT" : ""}</td><td class="num">${box}</td></tr>`;
   }
   // One playoff series: header, the two teams, then each game on its own line.
+  // Series results in two columns. Conference playoffs: the Finals across the top, then
+  // the East (or first) conference on the left and the West (or second) on the right.
+  // League-wide seeding: the first round on the left, every later round on the right.
+  function fitBrackets() {
+    document.querySelectorAll(".bk-wrap").forEach((w) => {
+      const bk = w.querySelector(".bk"); if (!bk) return;
+      const W = +bk.dataset.w, H = +bk.dataset.h, room = w.clientWidth;
+      const k = Math.min(1, room / W);
+      bk.style.transform = k < 1 ? `scale(${k})` : "";
+      bk.style.marginLeft = `${Math.max(0, (room - W * k) / 2)}px`;
+      w.style.height = `${Math.ceil(H * k)}px`;
+    });
+  }
+  function seriesColumns(sg, ser) {
+    const info = (s) => {
+      if (s.conf != null) return { conf: s.conf, round: s.round, final: s.final || s.label === "Finals" };
+      if (s.label === "Finals") return { conf: "Finals", round: 99, final: true };
+      const m = /^(.+) (round (\d+)|final)$/.exec(s.label);
+      if (m) return { conf: m[1], round: m[3] ? +m[3] - 1 : 98, final: false };
+      const r = /^Round (\d+)$/.exec(s.label);
+      return { conf: "Playoffs", round: r ? +r[1] - 1 : 97, final: false };
+    };
+    const list = ser.map((s) => ({ s, ...info(s) }));
+    const card = (x) => seriesCard(sg, x.s);
+    const latestFirst = (a) => a.slice().sort((x, y) => y.round - x.round);
+    const confs = [...new Set(list.filter((x) => !x.final && x.conf !== "Playoffs" && x.conf !== "Finals").map((x) => x.conf))];
+    let left, right, top = [];
+    if (confs.length >= 2) {
+      const score = (c) => (/east/i.test(c) ? 0 : /west/i.test(c) ? 2 : 1);
+      const order = confs.slice().sort((a, b) => score(a) - score(b));
+      top = list.filter((x) => x.final);
+      const half = Math.ceil(order.length / 2);
+      const L = order.slice(0, half), R = order.slice(half);
+      const col = (cs) => cs.flatMap((c) => latestFirst(list.filter((x) => x.conf === c && !x.final)));
+      left = { title: L.join(" & "), items: col(L) }; right = { title: R.join(" & "), items: col(R) };
+    } else {
+      left = { title: "First round", items: list.filter((x) => !x.final && x.round === 0) };
+      right = { title: "Later rounds", items: latestFirst(list.filter((x) => x.final || x.round > 0)) };
+    }
+    const stack = (c) => `<div class="series-col"><div class="series-col-head">${esc(c.title)}</div>${c.items.length ? c.items.map(card).join("") : `<div class="empty">Nothing yet.</div>`}</div>`;
+    return `${top.length ? `<div class="series-top">${top.map(card).join("")}</div>` : ""}<div class="series-cols">${stack(left)}${stack(right)}</div>`;
+  }
   function seriesCard(sg, s) {
     const snap = sg.teams;
     const team = (fid, seed, w, cls) => `<div class="sc-team ${cls}"><span class="bk-seed">${seed}</span>${snapBadge(snap, fid)}<span class="sc-name">${esc(snapName(snap, fid))}</span><b class="sc-w">${w}</b></div>`;
@@ -726,7 +791,7 @@
         <span class="spacer"></span>${box}</div>`;
     }).join("");
     return `<div class="series-card">
-      <div class="panel-head"><b>${esc(s.label)}</b><span class="sub">best of ${s.bestOf}${s.winner ? ` · ${esc(snap[s.winner]?.name || "")} win ${Math.max(s.wh, s.wl)}-${Math.min(s.wh, s.wl)}` : ""}</span></div>
+      <div class="panel-head"><b class="row">${s.label === "Finals" ? eventLogo("finals", "sm") : ""}${esc(s.label)}</b><span class="sub">best of ${s.bestOf}${s.winner ? ` · ${esc(snap[s.winner]?.name || "")} win ${Math.max(s.wh, s.wl)}-${Math.min(s.wh, s.wl)}` : ""}</span></div>
       ${team(s.hi, s.seedHi, s.wh, s.winner === s.hi ? "win" : s.winner ? "lose" : "")}${team(s.lo, s.seedLo, s.wl, s.winner === s.lo ? "win" : s.winner ? "lose" : "")}
       <div class="sc-games">${games || `<div class="sub">Not started.</div>`}</div></div>`;
   }
@@ -825,9 +890,10 @@
   }
   function logoPanel() {
     const S = GM.S;
-    const rows = [["league", "League logo", leagueMark() || `<span class="badge big" style="background:var(--court)">LG</span>`], ...S.teams.filter((t) => t.active).concat(S.teams.filter((t) => !t.active)).map((t) => [t.fid, `${t.city} ${t.name}${t.active ? "" : " (defunct)"}`, badge(t.fid, true)])];
+    const ev = (k, lab) => [`lg:${k}`, lab, eventLogo(k, "sm") || `<span class="badge big" style="background:var(--gold)">${k === "finals" ? "FIN" : "PO"}</span>`];
+    const rows = [["league", "League logo", leagueMark() || `<span class="badge big" style="background:var(--court)">LG</span>`], ev("playoffs", "Playoffs logo"), ev("finals", "Finals logo"), ...S.teams.filter((t) => t.active).concat(S.teams.filter((t) => !t.active)).map((t) => [t.fid, `${t.city} ${t.name}${t.active ? "" : " (defunct)"}`, badge(t.fid, true)])];
     return `<section class="panel"><h2>Logos</h2>
-      <div class="prose"><p>Add an image for the league or any team, including expansion teams. Logos are stored only in this browser. They aren't part of the app's code on GitHub, and they travel with your save code if you copy it.</p></div>
+      <div class="prose"><p>Add an image for the league, the playoffs, the Finals or any team, including expansion teams. Logos are stored only in this browser. They aren't part of the app's code on GitHub, and they travel with your save code if you copy it.</p></div>
       <div class="tablewrap"><table><tbody>${rows.map(([key, label, prev]) => `<tr><td>${prev}</td><td>${esc(label)}</td><td><label class="btn small" style="display:inline-block">Upload<input type="file" accept="image/*" data-logo="${key}" hidden></label> ${logos[key] ? `<button class="btn small" data-act="clearLogo" data-key="${key}">Remove</button>` : ""}</td></tr>`).join("")}</tbody></table></div></section>`;
   }
   // "3x MVP (01, 04, 07)" style summary of a player's awards.
@@ -923,6 +989,7 @@
     if (!GM.S) { renderSetup(); $("#modal").innerHTML = ""; return; }
     const views = { awards: renderAwards, records: renderRecords, office: renderOffice, schedule: renderSchedule, standings: renderStandings, playoffs: renderPlayoffs, teams: renderTeams, players: renderPlayers, leaders: renderLeaders, draft: renderDraft, moves: renderMoves, history: renderHistory, league: renderLeague, settings: renderSettings };
     (views[ui.tab] || renderOffice)();
+    fitBrackets();
     const m = ui.modal;
     $("#modal").innerHTML = !m ? "" : m.type === "player" ? playerModal(m.id) : m.type === "box" ? boxModal(m.season, m.id) : teamModal(m.id);
   }
@@ -1001,13 +1068,13 @@
     else if (el.id === "schedTeam") { ui.sched.team = el.value; render(); }
     else if (el.dataset && el.dataset.logo && el.files && el.files[0]) {
       const key = el.dataset.logo;
-      const isTrophy = key.startsWith("tr:");
+      const isTrophy = key.startsWith("tr:") || key.startsWith("lg:");
       readLogo(el.files[0], (url) => {
         if (!url) { toast("That file couldn't be read as an image.", true); return; }
         logos[key] = url;
         saveLogos().then((ok) => {
           if (!ok) { delete logos[key]; toast("This browser wouldn't save the image. Try a smaller image, or check that site storage is allowed.", true); render(); return; }
-          toast(isTrophy ? "Trophy saved in this browser." : "Logo saved in this browser."); render();
+          toast(key.startsWith("tr:") ? "Trophy saved in this browser." : "Logo saved in this browser."); render();
         });
       }, isTrophy ? 320 : 160);
     }
@@ -1021,4 +1088,10 @@
 
   $("#view").innerHTML = `<div class="empty">Loading your league…</div>`;
   GM.init().then(loadLogos).then(render, () => render());
+  // Re-lay the bracket when the window changes size (stacked vs. facing, and the fit).
+  let rsT = null, lastNarrow = null;
+  window.addEventListener("resize", () => { clearTimeout(rsT); rsT = setTimeout(() => {
+    const n = ((document.getElementById("view")?.clientWidth || window.innerWidth) - 40) < 900;
+    if (n !== lastNarrow && document.querySelector(".bk-wrap")) { lastNarrow = n; render(); } else fitBrackets();
+  }, 120); });
 })();

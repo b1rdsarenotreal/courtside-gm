@@ -1370,7 +1370,7 @@
         const label = br.label === "Finals" || (fromEnd === 0 && br.label === "Playoffs") ? "Finals"
           : fromEnd === 1 ? (br.label === "Playoffs" ? "Semifinals" : `${br.label} final`)
           : br.label === "Playoffs" ? `Round ${ri + 1}` : `${br.label} round ${ri + 1}`;
-        out.push({ label, hi: s.hi, lo: s.lo, wh: s.wh, wl: s.wl, winner: s.winner, bestOf: s.bestOf, seedHi: br.seeds.indexOf(s.hi) + 1, seedLo: br.seeds.indexOf(s.lo) + 1,
+        out.push({ label, conf: br.label, round: ri, final: label === "Finals", hi: s.hi, lo: s.lo, wh: s.wh, wl: s.wl, winner: s.winner, bestOf: s.bestOf, seedHi: br.seeds.indexOf(s.hi) + 1, seedLo: br.seeds.indexOf(s.lo) + 1,
           games: s.games.map((g) => [g.gid, g.home, g.away, g.hs, g.as]) });
       }));
     }

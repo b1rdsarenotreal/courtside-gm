@@ -748,8 +748,29 @@ window.NAME_POOL = {
   }
 
   // ---------- rotation ----------
+  // Positions: which lineup slots a player can fill.
+  const canG = (p) => /^G|-G$/.test(p.pos);                 // G, G-F, F-G
+  const canF = (p) => p.pos.includes("F");                  // F, G-F, F-G, F-C, C-F
+  const canC = (p) => p.pos.includes("C");                  // C, C-F, F-C
+  // Starting five by position: a center (or a big forward), two guards, two forwards,
+  // best available in each slot. One small-ball/big swap is allowed when a bench
+  // player is clearly better (7+ OVR) than the weakest starter.
+  function startingFive(pool) {
+    const left = pool.slice(), five = [];
+    const take = (ok) => { const i = left.findIndex(ok); if (i < 0) return false; five.push(left.splice(i, 1)[0]); return true; };
+    take(canC) || take((p) => p.pos === "F") || take(canF) || take(() => true);
+    for (let k = 0; k < 2; k++) take(canG) || take(() => true);
+    for (let k = 0; k < 2; k++) take(canF) || take(canC) || take(() => true);
+    if (five.length === 5 && left.length) {
+      const w = five.slice().sort((a, b) => a.r.ovr - b.r.ovr)[0];
+      if (left[0].r.ovr >= w.r.ovr + 7) { five[five.indexOf(w)] = left[0]; left.splice(0, 1, w); }
+    }
+    return { five, bench: left.sort((a, b) => b.r.ovr - a.r.ovr) };
+  }
   function rotation(fid, ignoreInj) {
-    const order = roster(fid).filter((p) => ignoreInj ? p.inj < 999 : p.inj === 0).sort((a, b) => b.r.ovr - a.r.ovr);
+    const healthy = roster(fid).filter((p) => ignoreInj ? p.inj < 999 : p.inj === 0).sort((a, b) => b.r.ovr - a.r.ovr);
+    const sf = startingFive(healthy);
+    const order = sf.five.sort((a, b) => b.r.ovr - a.r.ovr).concat(sf.bench);
     const n = Math.min(order.length, MIN_TEMPLATE.length);
     const mins = MIN_TEMPLATE.slice(0, n);
     const deficit = 200 - sum(mins);
@@ -1618,7 +1639,7 @@ window.NAME_POOL = {
       const av = cls.map(P).filter((p) => p.prospect === y);
       if (!av.length) return;
       const mode = teamMode(s.fid);
-      const val = (p) => (p.r.ovr * (mode === "contend" ? 0.6 : 0.45) + p.r.pot * (mode === "contend" ? 0.4 : 0.55)) + randn() * 3;
+      const val = (p) => (p.r.ovr * (mode === "contend" ? 0.6 : 0.45) + p.r.pot * (mode === "contend" ? 0.4 : 0.55)) + posNeed(s.fid, p) * 0.4 + randn() * 3;
       const ch = av.map((p) => [p, val(p)]).sort((a, b) => b[1] - a[1])[0][0];
       ch.prospect = null; ch.team = s.fid; ch.draft = { season: y, round: s.round, pick: i + 1, team: s.fid };
       ch.c = rookieContract(i + 1, s.round); ch.acq = `#${i + 1} pick, ${y} draft`;
@@ -1644,10 +1665,25 @@ window.NAME_POOL = {
       if (p.draft && p.draft.season === S.season + 1) continue; // just drafted
       p.c.yrs--;
       if (p.c.yrs > 0) continue;
-      const fid = p.team, keep = (p.r.ovr >= 58 || (age(p) <= 25 && p.r.pot >= 65)) && age(p) <= 34 && rnd() < 0.72;
+      const fid = p.team, keep = rnd() < keepChance(p, fid);
       if (keep) { const a = askingContract(p); p.c = { sal: a.sal, yrs: a.yrs }; txn(`${teamName(fid)} re-sign ${p.name}.`, fid, { type: "resign", p: pSnap(p), c: { sal: a.sal, yrs: a.yrs } }); }
       else { txn(`${p.name} leaves the ${teamName(fid)} in free agency.`, fid, { type: "leave", p: pSnap(p) }); p.lastTeam = p.team; p.team = null; p.c = { sal: 0, yrs: 0 }; if (p.r.ovr >= 70) log(`${p.name} becomes a free agent, leaving the ${teamName(fid)}.`, fid, "fa"); }
     }
+  }
+  // How likely a team re-signs an expiring player: rotation players and young talent
+  // usually stay; end-of-bench and older players move on more often. While real data
+  // exists, what she really did next season (stayed or switched teams) weighs in.
+  function keepChance(p, fid) {
+    const a = age(p), rank = roster(fid).filter((x) => x.r.ovr > p.r.ovr).length; // 0 = team's best
+    let k = rank < 5 ? 0.8 : rank < 8 ? 0.62 : rank < 10 ? 0.42 : 0.25;
+    if (a <= 25 && p.r.pot >= 62) k = Math.max(k, 0.75);
+    if (p.r.ovr < 45) k *= 0.6;
+    if (a >= 35) k *= 0.45; else if (a >= 33) k *= 0.75;
+    if (p.real && S.opts.realCareers && S.season < LAST_REAL) {
+      const nx = realLine(p.id, S.season + 1);
+      if (nx) k = nx[F.fid] === fid ? Math.max(k, 0.82) : Math.min(k, 0.35);
+    }
+    return k;
   }
   function develop() {
     const curve = (a) => a <= 21 ? 3 : a <= 22 ? 2.6 : a <= 23 ? 2.2 : a <= 24 ? 1.6 : a <= 25 ? 1 : a <= 26 ? 0.6 : a <= 27 ? 0.2 : a <= 28 ? 0 : a <= 29 ? -0.6 : a <= 30 ? -1.1 : a <= 31 ? -1.7 : a <= 32 ? -2.4 : a <= 33 ? -3 : -4;
@@ -1712,17 +1748,35 @@ window.NAME_POOL = {
       }
     }
   }
+  // Roster balance: how much a team needs a player's position (guards, forwards, bigs).
+  const POS_TARGET = { G: 4, F: 4, C: 2 }, POS_MIN = { G: 3, F: 3, C: 1 };
+  function posCounts(list) { return { G: list.filter(canG).length, F: list.filter(canF).length, C: list.filter(canC).length }; }
+  function posNeed(fid, p, list = roster(fid)) {
+    const n = posCounts(list); let b = 0;
+    if (canC(p) && n.C < POS_TARGET.C) b += n.C === 0 ? 10 : 5;
+    if (canG(p) && n.G < POS_TARGET.G) b += n.G < POS_MIN.G ? 8 : 4;
+    if (canF(p) && n.F < POS_TARGET.F) b += n.F < POS_MIN.F ? 8 : 4;
+    return Math.min(b, 12);
+  }
+  // Cutting this player would leave the team short at a position.
+  function posProtected(list, p) {
+    const n = posCounts(list.filter((x) => x !== p));
+    return (canC(p) && n.C < POS_MIN.C) || (canG(p) && n.G < POS_MIN.G) || (canF(p) && n.F < POS_MIN.F);
+  }
   function aiFreeAgency(intensity = 1) {
-    const fas = freeAgents().sort((a, b) => talent(b) - talent(a));
+    const all = freeAgents().sort((a, b) => talent(b) - talent(a)).slice(0, 80);
     for (const t of shuffle(activeTeams().slice())) {
       let n = roster(t.fid).length;
+      const fas = all.filter((p) => !p.team).map((p) => [p, talent(p) + posNeed(t.fid, p)]).sort((a, b) => b[1] - a[1]).map((x) => x[0]);
       for (const p of fas) {
-        if (p.team || n >= S.rules.rosterMax) continue;
-        if (rnd() > intensity && n >= S.rules.rosterMin) break;
+        // A full roster with no true big can still add one (the worst player is cut later).
+        const bigNeed = canC(p) && posCounts(roster(t.fid)).C === 0 && n <= S.rules.rosterMax;
+        if (p.team || (n >= S.rules.rosterMax && !bigNeed)) continue;
+        if (rnd() > intensity && n >= S.rules.rosterMin && !bigNeed) break;
         const ask = p.ask || askingContract(p);
         const need = n < S.rules.rosterMin;
         const worst = roster(t.fid).sort((a, b) => a.r.ovr - b.r.ovr)[0];
-        if (!need && worst && p.r.ovr < worst.r.ovr + 2) continue;
+        if (!need && worst && p.r.ovr + posNeed(t.fid, p) * 0.6 < worst.r.ovr + 2) continue;
         if (ask.sal <= capSpace(t.fid) || (need && ask.sal <= econ().min * 1.3)) {
           p.team = t.fid; p.c = { sal: Math.min(ask.sal, Math.max(econ().min, capSpace(t.fid))), yrs: ask.yrs }; p.ask = null; n++;
           p.acq = `Signed ${S.season}`;
@@ -1735,10 +1789,10 @@ window.NAME_POOL = {
   }
   function aiRosterFix(fid, initial) {
     let ps = roster(fid).sort((a, b) => a.r.ovr - b.r.ovr);
-    while (ps.length > S.rules.rosterMax) { const p = ps.shift(); if (!initial) txn(`${teamName(fid)} waive ${p.name}.`, fid, { type: "waive", p: pSnap(p) }); p.lastTeam = p.team; p.team = null; p.c = { sal: 0, yrs: 0 }; p.ask = askingContract(p); }
+    while (ps.length > S.rules.rosterMax) { const p = ps.find((x) => !posProtected(ps, x)) || ps[0]; ps = ps.filter((x) => x !== p); if (!initial) txn(`${teamName(fid)} waive ${p.name}.`, fid, { type: "waive", p: pSnap(p) }); p.lastTeam = p.team; p.team = null; p.c = { sal: 0, yrs: 0 }; p.ask = askingContract(p); }
     let guard = 0;
     while (roster(fid).length < S.rules.rosterMin && guard++ < 20) {
-      const fa = freeAgents().sort((a, b) => b.r.ovr - a.r.ovr)[0];
+      const fa = freeAgents().map((x) => [x, x.r.ovr + posNeed(fid, x)]).sort((a, b) => b[1] - a[1])[0]?.[0];
       if (!fa) { const g = genPlayer({ age: 24, ovrMean: 42, ovrSd: 4, potRoom: 2 }); S.players[g.id] = g; continue; }
       const sal = Math.max(econ().min, Math.min(fa.ask?.sal || econ().min, capSpace(fid)));
       fa.team = fid; fa.c = { sal: Math.round(sal / 1000) * 1000, yrs: 1 }; fa.ask = null;

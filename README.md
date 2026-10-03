@@ -28,7 +28,10 @@ Fan-made. Not affiliated with or endorsed by the WNBA, its teams or its players.
 - **Visual playoff bracket.** Conference brackets face each other with the Finals in the middle, or a single league-wide bracket. Byes, live series scores and the champion are all shown. During the season it shows the bracket as it would look if the season ended today, and past seasons' brackets stay viewable.
 - **Schedule tab** covering every season. Browse by day or by team (with a running record), plus playoff series game by game. Every game's score is kept for the life of the league. Full box scores, with team totals and shooting splits, are kept for the current and previous season.
 - **Your own logos.** Upload an image for the league or any team in Save & info. Logos are stored only in your browser (IndexedDB), never in this repo.
-- Game-by-game simulation with box scores, injuries, standings, playoffs, awards (MVP, DPOY, ROY, Finals MVP, All-League), transactions and a league record book. The record book compares your alternate history with what really happened.
+- **Possession-by-possession games.** Rotations and substitutions follow minutes plans, including foul trouble, foul-outs and garbage time. Shots are chosen by each player's tendencies and affected by the five defenders. The sim tracks rebounds, assists, steals, blocks, turnovers, fouls and free throws. Box scores include quarter scoring, offensive and defensive rebounds, fouls, plus/minus, bench points, largest lead and lead changes. League scoring self-calibrates to each real season's average.
+- **Awards** every season: MVP, which weighs team success (a losing team's star needs a season well clear of the field), Finals MVP, Defensive Player, Rookie of the Year, Sixth Player and Most Improved, plus the All-WNBA First and Second Teams, the All-Defensive Team and the All-Rookie Team. Player profiles summarize these, e.g. "3x MVP ('01, '04, '07)".
+- **Records**: single-game player and team records from your league's games, plus season, career and team records that include the real seasons before your start year.
+- AI front offices, transactions, standings and a league record book.
 
 ## Play
 

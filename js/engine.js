@@ -267,69 +267,199 @@
 
   // ---------- game sim ----------
   function leaguePts() { return (D.league[S.season] || D.league[LAST_REAL]).ppg; }
-  function simGame(h, a, opts = {}) {
-    const lp = leaguePts();
-    const k = Math.max(0.95, D.marginPer80) * lp / 80, home = opts.neutral ? 0 : 2.2 * lp / 87;
-    const rh = rotation(h), ra = rotation(a);
-    const trh = rh.length ? sum(rh.map((x) => P(x.id).r.ovr * x.min)) / 200 : 40;
-    const tra = ra.length ? sum(ra.map((x) => P(x.id).r.ovr * x.min)) / 200 : 40;
-    const margin = (trh - tra) * k + home, sd = 8.6 * lp / 87;
-    let hs = Math.round(lp + margin / 2 + randn() * sd), as = Math.round(lp - margin / 2 + randn() * sd), ot = 0;
-    while (hs === as) { ot++; hs += Math.round(lp / 9 + randn() * 3.5 + (trh - tra) * 0.15); as += Math.round(lp / 9 + randn() * 3.5); }
-    const box = { gid: opts.gid, home: h, away: a, hs, as, ot, players: {} };
-    box.players[h] = distributeBox(rh, hs, as, ot, lp);
-    box.players[a] = distributeBox(ra, as, hs, ot, lp);
-    return box;
+  // ---------- possession-by-possession game engine ----------
+  // Each game is played possession by possession: lineups and substitutions
+  // follow each team's minutes plan (with foul trouble and garbage time),
+  // shots are chosen by player tendencies, and makes depend on the shooter,
+  // the five defenders and overall team strength. Scoring is calibrated so the
+  // league average tracks each real season's points per game.
+  const QK = 0.0035;          // efficiency gained per point of team-rating edge
+  const HOME = 0.012;         // home-court efficiency bump
+  const ERA3 = () => (S.season < 2006 ? 0.72 : S.season < 2012 ? 0.8 : S.season < 2018 ? 0.88 : 1);
+  function calib() {
+    S.cal = S.cal || { m: 0.92, avg: null };
+    if (S.cal.avg == null) S.cal.avg = leaguePts();
+    return S.cal;
   }
-  function distributeBox(rot, pts, oppPts, ot, lp) {
-    if (!rot.length) return [];
-    const extra = ot * 5, sc = lp / 87;
-    const ps = rot.map((x) => ({ p: P(x.id), min: x.min * (0.88 + rnd() * 0.24), start: x.start }));
-    const tm = sum(ps.map((x) => x.min)); ps.forEach((x) => (x.min = (x.min * (200 + extra)) / tm));
-    const lw = () => Math.exp(randn() * 0.33);
-    const alloc = (total, wfn) => {
-      const w = ps.map((x) => x.min * wfn(x.p) * lw()); const W = sum(w) || 1;
-      const raw = w.map((v) => (v / W) * total); const out = raw.map(Math.floor);
-      let rem = Math.round(total) - sum(out);
-      const ord = raw.map((v, i) => [v - out[i], i]).sort((a, b) => b[0] - a[0]);
-      for (let i = 0; rem > 0 && i < ord.length; i++, rem--) out[ord[i][1]]++;
-      return out;
+  const offScore = (p) => 0.45 * p.r.ins + 0.35 * p.r.thr + 0.2 * p.r.ovr;
+  function pickW(arr, wf) {
+    let tot = 0; const w = arr.map((x) => { const v = Math.max(1e-6, wf(x)); tot += v; return v; });
+    let r = rnd() * tot;
+    for (let i = 0; i < arr.length; i++) { r -= w[i]; if (r <= 0) return arr[i]; }
+    return arr[arr.length - 1];
+  }
+  const avgR = (ps, k) => (ps.length ? sum(ps.map((p) => p.r[k])) / ps.length : 50);
+
+  function simGame(h, a, opts = {}) {
+    const lp = leaguePts(), cal = calib();
+    const pace = 70 + (lp - 69) * 0.8; // possessions per team per 40 minutes
+    const mk = (fid) => {
+      const rot = rotation(fid);
+      const avail = roster(fid).filter((p) => p.inj === 0);
+      const target = new Map(avail.map((p) => [p.id, 0]));
+      rot.forEach((x) => target.set(x.id, x.min * 60));
+      const tr = rot.length ? sum(rot.map((x) => P(x.id).r.ovr * x.min)) / 200 : 40;
+      return { fid, avail, target, tr, starters: rot.slice(0, 5).map((x) => x.id), on: [], lines: new Map(), pts: 0, q: [], tf: 0, sinceSub: 0, lead: 0, bench: 0 };
     };
-    const off = (p) => 0.45 * p.r.ins + 0.35 * p.r.thr + 0.2 * p.r.ovr;
-    const ptsA = alloc(pts, (p) => Math.exp((off(p) - 55) / 26));
-    const eraThree = S.season < 2010 ? 0.7 : S.season < 2018 ? 0.85 : 1;
-    const lines = ps.map((x, i) => {
-      const p = x.p, pt = ptsA[i];
-      const f3 = clamp((0.05 + (p.r.thr - 35) * 0.009) * eraThree, 0, 0.55);
-      const fft = clamp(0.13 + (p.r.ath - 50) * 0.003 + (p.r.ins - 50) * 0.002, 0.04, 0.3);
-      let tpm = clamp(Math.round((pt * f3) / 3 + (rnd() - 0.5)), 0, Math.floor(pt / 3));
-      let ftm = clamp(Math.round(pt * fft + (rnd() - 0.5) * 2), 0, pt - tpm * 3);
-      if ((pt - tpm * 3 - ftm) % 2) ftm += ftm > 0 && rnd() < 0.5 ? -1 : 1;
-      ftm = clamp(ftm, 0, pt - tpm * 3);
-      const twom = Math.max(0, (pt - tpm * 3 - ftm) / 2);
-      const p3 = clamp(0.25 + p.r.thr * 0.0017 + randn() * 0.06, 0.15, 0.6);
-      const p2 = clamp(0.39 + p.r.ins * 0.0017 + randn() * 0.06, 0.3, 0.72);
-      const pf = clamp(0.58 + p.r.fts * 0.0033, 0.5, 0.96);
-      const tpa = tpm + Math.max(0, Math.round(tpm * (1 / p3 - 1) + (rnd() - 0.5) * 0.8)) + (!tpm && p.r.thr > 50 && x.min > 12 && rnd() < 0.5 ? 1 : 0);
-      const twoa = Math.round(twom / p2 + (rnd() - 0.5) * 0.8);
-      const fta = ftm + Math.max(0, Math.round(ftm * (1 / pf - 1) + (rnd() - 0.5) * 0.8));
-      return { id: p.id, min: Math.round(x.min), start: x.start, pts: pt, tpm, tpa, fgm: twom + tpm, fga: twoa + tpa, ftm, fta, reb: 0, ast: 0, stl: 0, blk: 0, tov: 0 };
-    });
-    const fgm = sum(lines.map((l) => l.fgm));
-    const rebA = alloc(clamp(Math.round((34 + (pts - oppPts) * 0.08 + randn() * 4) * (0.8 + 0.2 * sc)), 20, 52), (p) => Math.exp((p.r.reb - 50) / 27));
-    const astA = alloc(Math.round(fgm * (0.58 + randn() * 0.06)), (p) => Math.exp((p.r.ply - 50) / 15));
-    const stlA = alloc(clamp(Math.round(7.5 + randn() * 2.5), 1, 16), (p) => Math.exp((p.r.def + p.r.ath - 100) / 24));
-    const blkA = alloc(clamp(Math.round(3.8 + randn() * 1.8), 0, 11), (p) => Math.exp((p.r.reb + p.r.def + p.r.ath - 150) / 22));
-    const tovA = alloc(clamp(Math.round(14 + randn() * 3), 5, 25), (p) => Math.exp((off(p) - 55) / 30) * Math.exp((p.r.ply - 50) / 60));
-    lines.forEach((l, i) => { l.reb = rebA[i]; l.ast = astA[i]; l.stl = stlA[i]; l.blk = blkA[i]; l.tov = tovA[i]; });
-    return lines;
+    const T2 = [mk(h), mk(a)];
+    const qual = [1 + QK * (T2[0].tr - T2[1].tr) + (opts.neutral ? 0 : HOME), 1 + QK * (T2[1].tr - T2[0].tr) - (opts.neutral ? 0 : HOME)];
+    const L = (t, p) => {
+      let l = t.lines.get(p.id);
+      if (!l) { l = { id: p.id, sec: 0, start: false, pts: 0, fgm: 0, fga: 0, tpm: 0, tpa: 0, ftm: 0, fta: 0, oreb: 0, dreb: 0, ast: 0, stl: 0, blk: 0, tov: 0, pf: 0, pm: 0 }; t.lines.set(p.id, l); }
+      return l;
+    };
+    let elapsed = 0, period = 0, leadChanges = 0, ties = 0, lastLeader = 0;
+    const fouledOut = (t, p) => (t.lines.get(p.id)?.pf || 0) >= 6;
+    function lineup(t, mode) {
+      let elig = t.avail.filter((p) => !fouledOut(t, p));
+      if (!elig.length) elig = t.avail.slice();
+      let five;
+      if (mode === "starters") five = t.starters.map(P).filter((p) => elig.includes(p));
+      else if (mode === "garbage") five = elig.slice().sort((x, y) => t.target.get(x.id) - t.target.get(y.id) || x.r.ovr - y.r.ovr).slice(0, 5);
+      else {
+        const horizon = elapsed + 240, full = Math.max(2400, elapsed + 1);
+        const need = (p) => {
+          const tg = t.target.get(p.id) || 0, played = t.lines.get(p.id)?.sec || 0;
+          let n = (tg / 2400) * Math.min(horizon, full + 300) - played;
+          const pf = t.lines.get(p.id)?.pf || 0;
+          if (period < 3 && pf >= period + 2) n -= 600; // foul trouble: sit
+          if (tg === 0) n -= 900;
+          return n;
+        };
+        five = elig.slice().sort((x, y) => need(y) - need(x)).slice(0, 5);
+      }
+      for (const p of elig) if (five.length < 5 && !five.includes(p)) five.push(p);
+      t.on = five; t.sinceSub = 0;
+      for (const p of five) L(t, p);
+    }
+    function score(oi, shooter, n) {
+      const o = T2[oi], d = T2[1 - oi];
+      o.pts += n; o.q[period] = (o.q[period] || 0) + n;
+      L(o, shooter).pts += n;
+      if (!o.starters.includes(shooter.id)) o.bench += n;
+      for (const p of o.on) L(o, p).pm += n;
+      for (const p of d.on) L(d, p).pm -= n;
+      const diff = T2[0].pts - T2[1].pts, leader = Math.sign(diff);
+      if (leader !== lastLeader) { if (leader === 0) ties++; else if (lastLeader !== 0) leadChanges++; lastLeader = leader || lastLeader; if (leader !== 0) lastLeader = leader; }
+      T2[0].lead = Math.max(T2[0].lead, diff); T2[1].lead = Math.max(T2[1].lead, -diff);
+    }
+    function freeThrows(oi, shooter, n) {
+      const o = T2[oi];
+      const pct = clamp(0.58 + shooter.r.fts * 0.0033, 0.45, 0.95);
+      let lastMade = true;
+      for (let i = 0; i < n; i++) { L(o, shooter).fta++; lastMade = rnd() < pct; if (lastMade) { L(o, shooter).ftm++; score(oi, shooter, 1); } }
+      return lastMade;
+    }
+    function rebound(oi, offRate) {
+      const o = T2[oi], d = T2[1 - oi];
+      const rate = clamp(offRate + (avgR(o.on, "reb") - avgR(d.on, "reb")) * 0.004, 0.08, 0.45);
+      if (rnd() < rate) { const r = pickW(o.on, (p) => Math.exp((p.r.reb - 50) / 24)); L(o, r).oreb++; return true; }
+      const r = pickW(d.on, (p) => Math.exp((p.r.reb - 50) / 24)); L(d, r).dreb++; return false;
+    }
+    function personalFoul(t, p) {
+      L(t, p).pf++; t.tf++;
+      if (fouledOut(t, p)) t.mustSub = true;
+    }
+    function possession(oi, heave) {
+      const o = T2[oi], d = T2[1 - oi];
+      const q = qual[oi] * cal.m;
+      const defAdj = (avgR(d.on, "def") - 55) * 0.0016;
+      const usage = (p) => Math.exp((offScore(p) - 55) / 30);
+      for (let tries = 0; tries < 5; tries++) {
+        // Turnover
+        const tovP = clamp(0.155 * (1 - (avgR(o.on, "ply") - 55) * 0.007) * (tries ? 0.55 : 1) / Math.sqrt(qual[oi]), 0.06, 0.3);
+        if (!heave && rnd() < tovP) {
+          const hnd = pickW(o.on, (p) => usage(p) * Math.exp((p.r.ply - 50) / 40));
+          L(o, hnd).tov++;
+          if (rnd() < 0.53) L(d, pickW(d.on, (p) => Math.exp((p.r.def + p.r.ath - 100) / 18))).stl++;
+          return;
+        }
+        // Non-shooting foul on the defense
+        if (!heave && rnd() < 0.1) {
+          personalFoul(d, pickW(d.on, (p) => Math.exp((55 - p.r.def) / 30) * (p.pos.includes("C") ? 1.3 : 1)));
+          if (d.tf >= 5) { freeThrows(oi, pickW(o.on, usage), 2); return; }
+          continue;
+        }
+        const sh = pickW(o.on, usage);
+        const three = Math.max(0.01, Math.min(0.65, (0.06 + (sh.r.thr - 40) * 0.011) * ERA3()));
+        const rimShare = clamp(0.5 + (sh.r.ins - 50) * 0.006 + (sh.r.ath - 50) * 0.004 - (sh.r.thr - 50) * 0.003, 0.2, 0.85);
+        const type = heave ? (rnd() < 0.5 ? "3" : "mid") : rnd() < three ? "3" : rnd() < rimShare ? "rim" : "mid";
+        let base = type === "rim" ? 0.52 + (sh.r.ins - 50) * 0.0045 + (sh.r.ath - 50) * 0.0012
+          : type === "mid" ? 0.345 + (sh.r.ins - 50) * 0.002 + (sh.r.fts - 50) * 0.0012
+          : 0.322 + (sh.r.thr - 50) * 0.0028;
+        let pMake = clamp((base - defAdj) * q * (heave ? 0.55 : 1), 0.04, 0.88);
+        const fouled = !heave && rnd() < (type === "rim" ? 0.2 : type === "mid" ? 0.075 : 0.025);
+        const val = type === "3" ? 3 : 2;
+        if (fouled) {
+          personalFoul(d, pickW(d.on, (p) => Math.exp((55 - p.r.def) / 30) * (p.pos.includes("C") || p.pos.includes("F") ? 1.25 : 1)));
+          if (rnd() < pMake * 0.42) {
+            const l = L(o, sh); l.fga++; l.fgm++; if (val === 3) { l.tpa++; l.tpm++; }
+            score(oi, sh, val);
+            if (rnd() < 0.62) { const others = o.on.filter((p) => p !== sh); if (others.length) L(o, pickW(others, (p) => Math.exp((p.r.ply - 50) / 12))).ast++; }
+            freeThrows(oi, sh, 1);
+            return;
+          }
+          const made = freeThrows(oi, sh, val);
+          if (!made && rebound(oi, 0.14)) continue;
+          return;
+        }
+        const l = L(o, sh); l.fga++; if (val === 3) l.tpa++;
+        if (rnd() < pMake) {
+          l.fgm++; if (val === 3) l.tpm++;
+          score(oi, sh, val);
+          const astP = type === "3" ? 0.82 : type === "rim" ? 0.52 : 0.5;
+          if (rnd() < astP) { const others = o.on.filter((p) => p !== sh); if (others.length) L(o, pickW(others, (p) => Math.exp((p.r.ply - 50) / 11))).ast++; }
+          return;
+        }
+        if (type !== "3" && rnd() < (type === "rim" ? 0.2 : 0.08) * Math.exp((avgR(d.on, "def") - 55) / 40))
+          L(d, pickW(d.on, (p) => Math.exp((p.r.reb + p.r.def + p.r.ath - 150) / 16))).blk++;
+        if (heave) return;
+        if (!rebound(oi, type === "3" ? 0.25 : 0.28)) return;
+      }
+    }
+    // Play the game
+    let off = rnd() < 0.5 ? 0 : 1;
+    const avgPoss = 2400 / (2 * pace);
+    for (period = 0; ; period++) {
+      const len = period < 4 ? 600 : 300;
+      if (period >= 4 && T2[0].pts !== T2[1].pts) break;
+      for (const t of T2) { t.tf = 0; t.q[period] = 0; }
+      for (const t of T2) lineup(t, period === 0 || period === 2 ? "starters" : "need");
+      let clock = len;
+      while (clock > 0) {
+        const margin = Math.abs(T2[0].pts - T2[1].pts);
+        const garbage = period === 3 && clock < 300 && margin >= 22;
+        for (const t of T2) if (t.mustSub || t.sinceSub >= 100 || (garbage && !t.garbage)) { t.mustSub = false; t.garbage = garbage; lineup(t, garbage ? "garbage" : "need"); }
+        let dur = clamp(avgPoss * (0.45 + rnd() * 1.1), 4, 24);
+        const heave = dur >= clock;
+        if (heave) dur = clock;
+        for (const t of T2) { for (const p of t.on) L(t, p).sec += dur; t.sinceSub += dur; }
+        elapsed += dur; clock -= dur;
+        possession(off, heave && rnd() < 0.6);
+        off = 1 - off;
+      }
+      if (period >= 3 && T2[0].pts !== T2[1].pts) break;
+      if (period > 12) { T2[0].pts++; T2[0].q[period]++; break; }
+    }
+    for (const t of T2) for (const id of t.starters) if (t.lines.has(id)) t.lines.get(id).start = true;
+    // Calibrate league scoring toward the real era average.
+    cal.avg = cal.avg * 0.985 + ((T2[0].pts + T2[1].pts) / 2) * 0.015;
+    cal.m = clamp(cal.m * Math.pow(lp / cal.avg, 0.04), 0.75, 1.35);
+    const out = (t) => [...t.lines.values()].filter((l) => l.sec > 0).sort((x, y) => (y.start - x.start) || (y.sec - x.sec)).map((l) => ({
+      id: l.id, start: l.start, min: Math.round(l.sec / 60), pts: l.pts, fgm: l.fgm, fga: l.fga, tpm: l.tpm, tpa: l.tpa, ftm: l.ftm, fta: l.fta,
+      oreb: l.oreb, dreb: l.dreb, reb: l.oreb + l.dreb, ast: l.ast, stl: l.stl, blk: l.blk, tov: l.tov, pf: l.pf, pm: l.pm }));
+    const ot = Math.max(0, period - 3);
+    const box = { gid: opts.gid, home: h, away: a, hs: T2[0].pts, as: T2[1].pts, ot, players: {}, q: { [h]: T2[0].q, [a]: T2[1].q },
+      extra: { lead: { [h]: T2[0].lead, [a]: T2[1].lead }, bench: { [h]: T2[0].bench, [a]: T2[1].bench }, leadChanges, ties } };
+    box.players[h] = out(T2[0]); box.players[a] = out(T2[1]);
+    return box;
   }
   function applyBox(box, playoff) {
     for (const fid of [box.home, box.away]) for (const l of box.players[fid]) {
       const p = P(l.id), bucket = playoff ? p.po : p.stats;
-      const st = (bucket[S.season] ||= { team: fid, gp: 0, gs: 0, min: 0, pts: 0, reb: 0, ast: 0, stl: 0, blk: 0, tov: 0, fgm: 0, fga: 0, tpm: 0, tpa: 0, ftm: 0, fta: 0 });
+      const st = (bucket[S.season] ||= { team: fid, gp: 0, gs: 0, min: 0, pts: 0, reb: 0, ast: 0, stl: 0, blk: 0, tov: 0, fgm: 0, fga: 0, tpm: 0, tpa: 0, ftm: 0, fta: 0, oreb: 0, dreb: 0, pf: 0, pm: 0 });
       st.team = fid; st.gp++; if (l.start) st.gs++;
-      for (const k of ["min", "pts", "reb", "ast", "stl", "blk", "tov", "fgm", "fga", "tpm", "tpa", "ftm", "fta"]) st[k] += l[k];
+      for (const k of ["min", "pts", "reb", "ast", "stl", "blk", "tov", "fgm", "fga", "tpm", "tpa", "ftm", "fta", "oreb", "dreb", "pf", "pm"]) st[k] = (st[k] || 0) + (l[k] || 0);
       if (p.inj === 0 && rnd() < 0.0045 * (l.min / 30)) {
         const g = Math.max(1, Math.round(-Math.log(rnd()) * 5));
         p.inj = g; p.injType = pick(["ankle sprain", "knee soreness", "hamstring strain", "back spasms", "concussion protocol", "foot soreness", "illness", "wrist sprain"]);
@@ -359,11 +489,12 @@
       for (const g of S.schedule.filter((x) => x.day === S.day && !x.played)) {
         const b = simGame(g.home, g.away, { gid: g.gid });
         g.played = true; g.hs = b.hs; g.as = b.as; g.ot = b.ot;
-        S.boxes[g.gid] = b; applyBox(b, false);
+        S.boxes[g.gid] = b; applyBox(b, false); trackRecords(b, false);
         const h = T(g.home), a = T(g.away);
         h.pf += b.hs; h.pa += b.as; a.pf += b.as; a.pa += b.hs;
         if (b.hs > b.as) { h.w++; h.hw++; a.l++; h.streak = h.streak > 0 ? h.streak + 1 : 1; a.streak = a.streak < 0 ? a.streak - 1 : -1; }
         else { a.w++; h.l++; h.hl++; a.streak = a.streak > 0 ? a.streak + 1 : 1; h.streak = h.streak < 0 ? h.streak - 1 : -1; }
+        h.maxStreak = Math.max(h.maxStreak || 0, h.streak); a.maxStreak = Math.max(a.maxStreak || 0, a.streak);
       }
       healDay();
       if (S.day % 4 === 0) for (const t of activeTeams()) if (roster(t.fid).filter((p) => !p.inj).length < 9) aiRosterFix(t.fid);
@@ -506,6 +637,8 @@
     po.runnerUp = last ? (last.winner === last.hi ? last.lo : last.hi) : null;
     po.finalsMvp = finalsMvp(po.champion);
     T(po.champion).titles++;
+    if (po.finalsMvp) P(po.finalsMvp).awards.push(`${S.season} Finals MVP`);
+    for (const p of roster(po.champion)) if (p.po[S.season]) p.awards.push(`${S.season} Champion`);
     log(`🏆 The ${teamName(po.champion)} win the ${S.season} championship. Finals MVP: ${P(po.finalsMvp)?.name || "–"}.`, po.champion, "title");
   }
   function activeSeries() {
@@ -524,7 +657,7 @@
       const hiHome = s.bestOf === 1 ? true : s.bestOf === 3 ? g !== 1 : [0, 1, 4, 6].includes(g);
       const home = hiHome ? s.hi : s.lo, away = hiHome ? s.lo : s.hi;
       const b = simGame(home, away, { gid: `po${S.season}-${s.hi}-${s.lo}-${g + 1}` });
-      S.boxes[b.gid] = b; applyBox(b, true);
+      S.boxes[b.gid] = b; applyBox(b, true); trackRecords(b, true);
       if ((home === s.hi) === (b.hs > b.as)) s.wh++; else s.wl++;
       s.games.push({ home, away, hs: b.hs, as: b.as, gid: b.gid });
       const need = Math.ceil(s.bestOf / 2);
@@ -552,31 +685,135 @@
     const g = st.gp;
     return { team: st.team, gp: g, gs: st.gs, min: round1(st.min / g), pts: round1(st.pts / g), reb: round1(st.reb / g), ast: round1(st.ast / g),
       stl: round1(st.stl / g), blk: round1(st.blk / g), tov: round1(st.tov / g), fg: st.fga ? st.fgm / st.fga : 0, tp: st.tpa ? st.tpm / st.tpa : 0,
-      ft: st.fta ? st.ftm / st.fta : 0, ts: st.fga + st.fta ? st.pts / (2 * (st.fga + 0.44 * st.fta)) : 0 };
+      ft: st.fta ? st.ftm / st.fta : 0, ts: st.fga + st.fta ? st.pts / (2 * (st.fga + 0.44 * st.fta)) : 0,
+      oreb: round1((st.oreb || 0) / g), dreb: round1((st.dreb || 0) / g), pf: round1((st.pf || 0) / g), pm: round1((st.pm || 0) / g) };
   }
-  function awardScore(p) {
-    const s = perGame(p); if (!s || s.gp < S.rules.games * 0.45) return -1;
-    const t = T(s.team); const wp = t.w / Math.max(1, t.w + t.l);
+  // Individual production per game, scaled to the era's scoring level.
+  function indScore(s) {
+    if (!s) return 0;
     const sc = 87 / leaguePts();
-    return (s.pts * sc) + 1.1 * s.reb + 1.4 * s.ast + 2 * (s.stl + s.blk) - s.tov + (s.ts - 0.54) * 40 + wp * 12;
+    return s.pts * sc + 1.1 * s.reb + 1.5 * s.ast + 2 * (s.stl + s.blk) - 1.2 * s.tov + (s.ts - 0.54) * 40 + (s.pm || 0) * 0.1;
+  }
+  const minGames = () => S.rules.games * 0.55;
+  const teamWp = (fid) => { const t = T(fid); return t ? t.w / Math.max(1, t.w + t.l) : 0.5; };
+  function defScore(p, s) {
+    const tm = T(s.team), gp = Math.max(1, tm.w + tm.l), oppPpg = tm.pa / gp;
+    return 3.2 * (s.stl + s.blk) + 0.45 * (s.dreb ?? s.reb * 0.75) + p.r.def * 0.15 + s.min * 0.05 + (leaguePts() - oppPpg) * 0.35;
   }
   function computeAwards() {
-    const ps = Object.values(S.players).filter((p) => p.team && perGame(p));
-    const by = (f) => ps.filter((p) => f(p) > -1).sort((a, b) => f(b) - f(a));
-    const mvp = by(awardScore);
-    const roy = by((p) => (isRookie(p) ? awardScore(p) : -1));
-    const dpoy = by((p) => { const s = perGame(p); if (!s || s.gp < S.rules.games * 0.45) return -1; return 3 * (s.stl + s.blk) + 0.4 * s.reb + p.r.def * 0.12 + s.min * 0.05; });
-    const a = { mvp: mvp[0]?.id, roy: roy[0]?.id, dpoy: dpoy[0]?.id, allLeague: mvp.slice(0, 5).map((p) => p.id) };
-    const tag = (id, name) => { if (id) { P(id).awards.push(`${S.season} ${name}`); log(`${P(id).name} (${T(P(id).team).abbr}) wins ${S.season} ${name}.`, P(id).team, "award"); } };
-    tag(a.mvp, "MVP"); tag(a.dpoy, "Defensive Player of the Year"); tag(a.roy, "Rookie of the Year");
-    a.allLeague.forEach((id) => P(id).awards.push(`${S.season} All-League`));
+    const y = S.season;
+    const rows = Object.values(S.players).filter((p) => p.team && !p.retired).map((p) => ({ p, s: perGame(p) })).filter((x) => x.s);
+    const elig = rows.filter((x) => x.s.gp >= minGames());
+    for (const x of rows) { x.ind = indScore(x.s); x.wp = teamWp(x.s.team); }
+    const sortBy = (arr, f) => arr.slice().sort((a, b) => f(b) - f(a));
+    // MVP: production plus team success. A player on a losing team needs a
+    // season well clear of everyone else to win.
+    const indRank = sortBy(elig, (x) => x.ind);
+    const bestInd = indRank[0]?.ind || 0, secondInd = indRank[1]?.ind || 0;
+    const mvpScore = (x) => {
+      let v = x.ind + 26 * (x.wp - 0.5);
+      if (x.wp <= 0.5 && !(x === indRank[0] && bestInd >= secondInd * 1.15)) v -= 10 + 40 * (0.5 - x.wp);
+      return v;
+    };
+    const mvpList = sortBy(elig.filter((x) => x.s.min >= 28), mvpScore);
+    const allWnba = sortBy(elig.filter((x) => x.s.min >= 22), (x) => x.ind + 10 * (x.wp - 0.5));
+    const rookies = rows.filter((x) => isRookie(x.p) && x.s.gp >= S.rules.games * 0.4);
+    const royList = sortBy(rookies, (x) => x.ind);
+    const defList = sortBy(elig, (x) => defScore(x.p, x.s));
+    const sixth = sortBy(elig.filter((x) => x.s.gs <= x.s.gp * 0.35), (x) => x.ind);
+    // Most improved: biggest jump over last season (not rookies or the MVP).
+    const prevInd = (p) => { const c = p.career.find((e) => e.season === y - 1); if (c && c.gp >= 12) return indScore(c);
+      const l = p.real ? realLine(p.id, y - 1) : null; return l && l[F.gp] >= 12 ? indScore({ pts: l[F.pts], reb: l[F.reb], ast: l[F.ast], stl: l[F.stl], blk: l[F.blk], tov: 1.5, ts: 0.54 }) : null; };
+    const mipList = sortBy(elig.filter((x) => !isRookie(x.p) && prevInd(x.p) != null && x.p.id !== mvpList[0]?.p.id), (x) => x.ind - prevInd(x.p));
+    const ids = (arr, n) => arr.slice(0, n).map((x) => x.p.id);
+    const a = {
+      mvp: mvpList[0]?.p.id, dpoy: defList[0]?.p.id, roy: royList[0]?.p.id, smoy: sixth[0]?.p.id, mip: mipList[0]?.p.id,
+      allFirst: ids(allWnba, 5), allSecond: allWnba.slice(5, 10).map((x) => x.p.id), allDef: ids(defList, 5), allRookie: ids(royList, 5),
+    };
+    const tag = (id, name, news) => { if (!id) return; P(id).awards.push(`${y} ${name}`); if (news) log(`${P(id).name} (${T(P(id).team).abbr}) wins ${y} ${name}.`, P(id).team, "award"); };
+    tag(a.mvp, "MVP", 1); tag(a.dpoy, "Defensive Player of the Year", 1); tag(a.roy, "Rookie of the Year", 1);
+    tag(a.smoy, "Sixth Player of the Year", 1); tag(a.mip, "Most Improved Player", 1);
+    a.allFirst.forEach((id) => tag(id, "All-WNBA First Team")); a.allSecond.forEach((id) => tag(id, "All-WNBA Second Team"));
+    a.allDef.forEach((id) => tag(id, "All-Defensive Team")); a.allRookie.forEach((id) => tag(id, "All-Rookie Team"));
     return a;
   }
   const isRookie = (p) => p.firstSeason === S.season || (S.season === S.startYear && p.real && Math.min(...realSeasons(p.id)) === S.season);
   function finalsMvp(fid) {
     const ps = roster(fid).filter((p) => p.po[S.season]);
-    ps.sort((a, b) => { const x = a.po[S.season], y = b.po[S.season]; return (y.pts + y.reb + y.ast) - (x.pts + x.reb + x.ast); });
+    const sc = (p) => { const x = p.po[S.season]; return (x.pts + 1.1 * x.reb + 1.5 * x.ast + 2 * (x.stl + x.blk) - x.tov) / Math.max(1, x.gp); };
+    ps.sort((a, b) => sc(b) - sc(a));
     return ps[0]?.id;
+  }
+
+  // ---------- records ----------
+  // Single-game records are tracked as games are played (top 10 per stat).
+  const REC_STATS = ["pts", "reb", "ast", "stl", "blk", "tpm"];
+  function recPush(list, entry, asc) {
+    list.push(entry);
+    list.sort((a, b) => (asc ? a.v - b.v : b.v - a.v));
+    if (list.length > 10) list.length = 10;
+  }
+  function trackRecords(box, playoff) {
+    const R = (S.records ||= { game: {}, team: { high: [], low: [], margin: [] } });
+    for (const k of REC_STATS) R.game[k] ||= [];
+    for (const fid of [box.home, box.away]) {
+      const opp = fid === box.home ? box.away : box.home;
+      for (const l of box.players[fid]) for (const k of REC_STATS) {
+        const list = R.game[k];
+        if (l[k] > 0 && (list.length < 10 || l[k] > list[list.length - 1].v))
+          recPush(list, { v: l[k], pid: l.id, name: P(l.id)?.name, fid, abbr: T(fid).abbr, opp: T(opp).abbr, season: S.season, gid: box.gid, po: !!playoff });
+      }
+      const pts = fid === box.home ? box.hs : box.as;
+      const e = { v: pts, fid, abbr: T(fid).abbr, opp: T(opp).abbr, season: S.season, gid: box.gid, po: !!playoff };
+      if (R.team.high.length < 10 || pts > R.team.high[R.team.high.length - 1].v) recPush(R.team.high, { ...e });
+      if (R.team.low.length < 10 || pts < R.team.low[R.team.low.length - 1].v) recPush(R.team.low, { ...e }, true);
+    }
+    const m = Math.abs(box.hs - box.as), w = box.hs > box.as ? box.home : box.away, lz = w === box.home ? box.away : box.home;
+    if (R.team.margin.length < 10 || m > R.team.margin[R.team.margin.length - 1].v)
+      recPush(R.team.margin, { v: m, fid: w, abbr: T(w).abbr, opp: T(lz).abbr, score: `${Math.max(box.hs, box.as)}-${Math.min(box.hs, box.as)}`, season: S.season, gid: box.gid, po: !!playoff });
+  }
+  // Season and career leaderboards: real seasons before the league's start
+  // year plus every season played in this league.
+  function seasonLines() {
+    const out = [];
+    for (const rp of D.players) for (const ys in rp.s) {
+      const y = +ys; if (y >= S.startYear) continue;
+      const l = rp.s[ys];
+      out.push({ pid: rp.id, name: rp.n, season: y, team: fidAbbr(l[F.fid], y), gp: l[F.gp], pts: l[F.pts], reb: l[F.reb], ast: l[F.ast], stl: l[F.stl], blk: l[F.blk], real: true });
+    }
+    for (const p of Object.values(S.players)) for (const c of p.career)
+      out.push({ pid: p.id, name: p.name, season: c.season, team: T(c.team)?.abbr || c.team, gp: c.gp, pts: c.pts, reb: c.reb, ast: c.ast, stl: c.stl, blk: c.blk, real: false });
+    return out;
+  }
+  function recordBook() {
+    const lines = seasonLines();
+    const gamesIn = {};
+    for (const y in D.league) gamesIn[y] = D.league[y].games;
+    for (const h of S.history) gamesIn[h.season] = gamesIn[h.season] || 34;
+    const qualified = lines.filter((l) => l.gp >= (gamesIn[l.season] || 34) * 0.5);
+    const top = (arr, k, n = 10) => arr.slice().sort((a, b) => b[k] - a[k]).slice(0, n);
+    const season = {}; for (const k of ["pts", "reb", "ast", "stl", "blk"]) season[k] = top(qualified, k);
+    const car = {};
+    for (const l of lines) {
+      const c = (car[l.pid] ||= { pid: l.pid, name: l.name, gp: 0, pts: 0, reb: 0, ast: 0, stl: 0, blk: 0, first: l.season, last: l.season });
+      c.gp += l.gp; for (const k of ["pts", "reb", "ast", "stl", "blk"]) c[k] += Math.round(l[k] * l.gp);
+      c.first = Math.min(c.first, l.season); c.last = Math.max(c.last, l.season);
+    }
+    const career = {}; for (const k of ["pts", "reb", "ast", "stl", "blk", "gp"]) career[k] = top(Object.values(car), k);
+    // Team seasons
+    const teamSeasons = [];
+    for (const y in D.teams) if (+y < S.startYear) for (const t of D.teams[y]) teamSeasons.push({ season: +y, name: `${t.city} ${t.name}`, fid: t.fid, w: t.w, l: t.l, real: true });
+    for (const t of S.teams) for (const h of t.hist) teamSeasons.push({ season: h.season, name: h.name, fid: t.fid, w: h.w, l: h.l, streak: h.maxStreak || 0 });
+    teamSeasons.forEach((t) => (t.pct = t.w / Math.max(1, t.w + t.l)));
+    const titles = S.teams.filter((t) => t.titles).sort((a, b) => b.titles - a.titles).map((t) => ({ fid: t.fid, name: `${t.city} ${t.name}`, titles: t.titles, active: t.active }));
+    return {
+      game: (S.records || {}).game || {}, teamGame: (S.records || {}).team || { high: [], low: [], margin: [] },
+      season, career,
+      bestTeams: teamSeasons.slice().sort((a, b) => b.pct - a.pct || b.w - a.w).slice(0, 10),
+      worstTeams: teamSeasons.slice().sort((a, b) => a.pct - b.pct || a.w - b.w).slice(0, 10),
+      streaks: teamSeasons.filter((t) => t.streak).sort((a, b) => b.streak - a.streak).slice(0, 10),
+      titles,
+    };
   }
 
   // ---------- history events ----------
@@ -730,7 +967,7 @@
     for (const br of allBr) br.rounds.forEach((rd) => rd.forEach((s) => { for (const f of [s.hi, s.lo]) if (f) reached[f] = Math.max(reached[f] || 0, 1); }));
     for (const t of activeTeams()) {
       const res = t.fid === po.champion ? "Champion" : t.fid === po.runnerUp ? "Finals" : po.qualified.includes(t.fid) ? "Playoffs" : "–";
-      t.hist.push({ season: S.season, name: `${t.city} ${t.name}`, abbr: t.abbr, w: t.w, l: t.l, res, conf: t.conf });
+      t.hist.push({ season: S.season, name: `${t.city} ${t.name}`, abbr: t.abbr, w: t.w, l: t.l, res, conf: t.conf, maxStreak: t.maxStreak || 0 });
     }
     for (const p of Object.values(S.players)) { const s = perGame(p); if (s) p.career.push({ season: S.season, ...s, ovr: p.r.ovr }); }
     archiveSeason();
@@ -756,7 +993,7 @@
     for (const p of freeAgents()) p.ask = askingContract(p);
     aiFreeAgency(1); aiFreeAgency(1);
     aiTrades(3);
-    for (const t of activeTeams()) { Object.assign(t, { w: 0, l: 0, hw: 0, hl: 0, pf: 0, pa: 0, streak: 0 }); aiRosterFix(t.fid); t.dead = t.dead.filter((d) => d.season >= S.season); }
+    for (const t of activeTeams()) { Object.assign(t, { w: 0, l: 0, hw: 0, hl: 0, pf: 0, pa: 0, streak: 0, maxStreak: 0 }); aiRosterFix(t.fid); t.dead = t.dead.filter((d) => d.season >= S.season); }
     S.prevBoxes = { season: S.season - 1, boxes: S.boxes };
     S.playoffs = null; S.awards = null; S.boxes = {}; S.schedule = []; S.day = 0;
     pruneSave();
@@ -788,7 +1025,9 @@
       const a = 20 + Math.floor(rnd() * 4);
       // While real draft classes exist (through 2026) generated players only fill the lower slots.
       const tier = y <= LAST_REAL ? (i < 5 ? 50 : i < 20 ? 45 : 41) : (i < 3 ? 62 : i < 10 ? 55 : i < 25 ? 48 : 43);
-      const p = genPlayer({ age: a, ovrMean: tier, ovrSd: 4.5, potRoom: Math.max(3, (25 - a) * 3.5 + (i < 10 ? 5 : 0)), draft: true });
+      const realEra = y <= LAST_REAL;
+      const p = genPlayer({ age: a, ovrMean: tier, ovrSd: realEra ? 3.5 : 4.5, potRoom: realEra ? Math.max(2, (24 - a) * 2) : Math.max(3, (25 - a) * 3.5 + (i < 10 ? 5 : 0)), draft: true });
+      if (realEra) { p.r.pot = Math.min(p.r.pot, 62); p.potCap = 64; } // depth players while real classes exist
       p.prospect = y; p.firstSeason = y; S.players[p.id] = p; out.push(p.id);
     }
     return out;
@@ -875,6 +1114,7 @@
         const dd = p.r.ovr - old;
         for (const k of SKILLS) p.r[k] = Math.round(clamp(p.r[k] + dd * (k === "ath" ? (a >= 29 ? 1.5 : 0.8) : 0.6 + rnd() * 0.8) + randn(), 20, 99));
         p.r.pot = a >= 28 ? p.r.ovr : Math.round(clamp(Math.max(p.r.ovr, p.r.pot + randn() * 2), p.r.ovr, 99));
+        if (p.potCap) { p.r.pot = Math.min(p.r.pot, p.potCap); p.r.ovr = Math.min(p.r.ovr, p.potCap); }
       }
     }
   }
@@ -1111,7 +1351,7 @@
   };
 
   window.GM = {
-    seasonGames, archivedSeasons, seasonBracket, bracketSeasons, init, getKV, setKV, hasDB, realScheduleStatus, flush,
+    recordBook, seasonGames, archivedSeasons, seasonBracket, bracketSeasons, init, getKV, setKV, hasDB, realScheduleStatus, flush,
     get S() { return S; }, data: D, F, get saveError() { return saveError; },
     newLeague, load, save, importState, clearSave, previewSeason, eraRules,
     P, T, activeTeams, teamName, roster, freeAgents, payroll, capSpace, econ, age, teamRating, powerRanks, teamMode, rotation,

@@ -434,3 +434,33 @@ td.tx-deal b { font-family: var(--font-display); font-size: 1.05rem; }
 .series-col-head { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); padding: 2px 4px; border-bottom: 2px solid var(--line); }
 @media (max-width: 900px) { .series-cols { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 600px) { .event-logo.lg { height: 40px; max-width: 96px; } .po-title { gap: 10px; } }
+
+/* ---------- award teams at the time ---------- */
+.aw-who { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.aw-team { display: inline-flex; align-items: center; gap: 6px; }
+
+/* ---------- franchise history ---------- */
+.modal.wide { width: min(1180px, 100%); }
+.fr { display: grid; gap: 22px; }
+.fr h3 { margin: 0 0 8px; font-size: 1rem; }
+.fr-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.fr-tile { background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; display: grid; gap: 2px; }
+.fr-tile b { font-size: 1.35rem; font-family: "Barlow Condensed", sans-serif; letter-spacing: 0.01em; }
+.fr-seasons td { vertical-align: middle; }
+.fr-run { display: flex; flex-wrap: wrap; gap: 4px; }
+.fr-ser { display: inline-flex; align-items: baseline; gap: 4px; padding: 2px 8px; border-radius: 99px; font-size: 0.76rem; background: var(--surface-3); white-space: nowrap; }
+.fr-ser.won { background: color-mix(in srgb, var(--good, #2f8f5b) 14%, transparent); }
+.fr-ser.lost { background: color-mix(in srgb, var(--bad, #c2412d) 12%, transparent); }
+.fr-round { color: var(--muted); font-size: 0.7rem; }
+.chip.gold { background: var(--gold-soft); color: var(--gold); }
+.fr-leaders, .fr-awards { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; margin-top: 8px; }
+.fr-board { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--surface-2); display: grid; gap: 6px; align-content: start; }
+.fr-board .eyebrow { display: inline-flex; align-items: center; }
+.fr-board ol, .fr-board ul { margin: 0; padding-left: 18px; display: grid; gap: 3px; font-size: 0.85rem; }
+.fr-board ul { list-style: none; padding-left: 0; }
+.fr-two { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 18px; }
+@media (max-width: 900px) { .fr-two { grid-template-columns: minmax(0, 1fr); } }
+.fr-li { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.fr-li > span:first-child { min-width: 0; }
+.fr-li > b, .fr-li > .muted:last-child { flex: none; white-space: nowrap; }
+.fr-li .muted { white-space: nowrap; }

@@ -281,7 +281,7 @@
   }
   function awardsBlock(a) {
     if (!a) return "";
-    const item = (lab, id) => id && GM.P(id) ? `<div><span class="eyebrow">${lab}</span><div>${plink(GM.P(id))} <span class="muted">${esc(GM.T(GM.P(id).team)?.abbr || "")}</span></div></div>` : "";
+    const item = (lab, id) => id && GM.P(id) ? `<div><span class="eyebrow">${lab}</span><div>${plink(GM.P(id))} <span class="muted">${esc(GM.T(GM.teamAt(id, GM.S.season))?.abbr || "")}</span></div></div>` : "";
     return `<div class="grid3">${item("MVP", a.mvp)}${item("Defensive POY", a.dpoy)}${item("Rookie of the Year", a.roy)}</div>`;
   }
   function brackets() {
@@ -495,18 +495,59 @@
     const ps = GM.roster(fid).sort((a, b) => b.r.ovr - a.r.ovr);
     const open = GM.officeOpen() && t.active;
     const conf = ui.confirm === "fold" + fid;
-    return `<div class="modal-bg" data-act="closeModal"><div class="modal" style="--tc:${t.color}" role="dialog" aria-modal="true" aria-label="${esc(t.city)} ${esc(t.name)}" data-stop>
+    const view = ui.teamView || "roster";
+    return `<div class="modal-bg" data-act="closeModal"><div class="modal wide" style="--tc:${t.color}" role="dialog" aria-modal="true" aria-label="${esc(t.city)} ${esc(t.name)}" data-stop>
       <div class="modal-head"><div class="row">${badge(fid, true)}<div><h2>${esc(t.city)} ${esc(t.name)}</h2><div class="sub">${t.active ? `${esc(t.conf)} · ${rec(t)} · rating ${GM.teamRating(fid).toFixed(1)} · payroll ${money(GM.payroll(fid))} of ${money(S.rules.cap)}` : `Folded ${t.folded}`} · ${t.titles} title${t.titles === 1 ? "" : "s"}</div></div></div><div class="row"><button class="btn" data-act="teamSched" data-id="${fid}">Schedule &amp; box scores</button><button class="btn" data-act="closeModal">Close</button></div></div>
-      ${t.active ? `<div class="tablewrap"><table><thead><tr><th>Player</th><th class="num">Age</th><th class="num">OVR</th><th class="num">POT</th><th class="num">GP</th><th class="num">PTS</th><th class="num">REB</th><th class="num">AST</th><th class="num">Salary</th><th class="num">Yrs</th><th></th></tr></thead><tbody>
+      <div class="seg"><button class="${view === "roster" ? "on" : ""}" data-act="teamView" data-v="roster">${t.active ? "Roster" : "Team"}</button><button class="${view === "history" ? "on" : ""}" data-act="teamView" data-v="history">Franchise history</button></div>
+      ${view === "history" ? franchiseView(fid) : `${t.active ? `<div class="tablewrap"><table><thead><tr><th>Player</th><th class="num">Age</th><th class="num">OVR</th><th class="num">POT</th><th class="num">GP</th><th class="num">PTS</th><th class="num">REB</th><th class="num">AST</th><th class="num">Salary</th><th class="num">Yrs</th><th></th></tr></thead><tbody>
         ${ps.map((p) => { const s = GM.perGame(p); return `<tr><td>${plink(p)}</td><td class="num">${GM.age(p)}</td><td class="num">${ovr(p.r.ovr)}</td><td class="num">${rt(p.r.pot)}</td><td class="num">${s ? s.gp : "–"}</td><td class="num">${s ? s.pts : "–"}</td><td class="num">${s ? s.reb : "–"}</td><td class="num">${s ? s.ast : "–"}</td><td class="num">${money(p.c.sal)}</td><td class="num">${p.c.yrs}</td><td>${p.inj ? `<span class="chip bad">${p.inj >= 999 ? "Out for season" : "Out " + p.inj + "g"}</span>` : ""}</td></tr>`; }).join("")}
       </tbody></table></div>` : ""}
-      ${t.hist.length ? `<details><summary class="eyebrow" style="cursor:pointer">Franchise history (${t.hist.length} season${t.hist.length === 1 ? "" : "s"})</summary><div class="tablewrap"><table><tbody>${t.hist.slice().reverse().map((h) => `<tr><td>${h.season}</td><td>${esc(h.name)}</td><td class="num">${h.w}-${h.l}</td><td>${h.res === "Champion" ? '<span class="chip accent">Champion</span>' : esc(h.res)}</td></tr>`).join("")}</tbody></table></div></details>` : ""}
       ${open ? `<div class="callout"><b>Commissioner actions</b>
         <div class="row"><label class="row">Conference <select data-act="teamConf" data-id="${fid}" aria-label="Conference">${S.conferences.map((c) => `<option ${c === t.conf ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></label></div>
         <div class="row"><input type="text" id="relCity" value="${esc(t.city)}" aria-label="City" placeholder="City"><input type="text" id="relName" value="${esc(t.name)}" aria-label="Nickname" placeholder="Nickname"><input type="text" id="relAbbr" value="${esc(t.abbr)}" maxlength="3" size="4" aria-label="Abbreviation"><input type="color" id="relColor" value="${/^#[0-9a-f]{6}$/i.test(t.color) ? t.color : "#666666"}" aria-label="Team color"><button class="btn" data-act="relocate" data-id="${fid}">Relocate / rename</button></div>
         <div class="row">${conf ? `<span>Fold the ${esc(t.name)}? Their players go to a dispersal draft.</span><button class="btn danger" data-act="fold" data-id="${fid}">Fold the franchise</button><button class="btn" data-act="cancel">Keep them</button>` : `<button class="btn danger" data-act="askFold" data-id="${fid}">Fold this franchise…</button>`}</div></div>`
-        : t.active ? `<div class="sub">Franchise changes open in the preseason and offseason.</div>` : ""}
+        : t.active ? `<div class="sub">Franchise changes open in the preseason and offseason.</div>` : ""}`}
     </div></div>`;
+  }
+  function franchiseView(fid) {
+    const h = GM.franchiseHistory(fid); if (!h) return "";
+    const sm = h.summary, pct = sm.w + sm.l ? (sm.w / (sm.w + sm.l)).toFixed(3).replace(/^0/, "") : "–";
+    const pn = (pid, name) => (GM.P(pid) ? `<button class="plink" data-act="player" data-id="${pid}">${esc(name)}</button>` : esc(name));
+    const yrs = (a) => a.map((y) => "'" + String(y).slice(2)).join(", ");
+    const tile = (lab, val, sub = "") => `<div class="fr-tile"><span class="eyebrow">${lab}</span><b>${val}</b>${sub ? `<span class="sub">${sub}</span>` : ""}</div>`;
+    const resChip = (s) => s.live ? `<span class="chip">In progress</span>` : s.res === "Champion" ? `<span class="chip accent">${trophy("champion", "xs")}Champion</span>` : s.res === "Finals" ? `<span class="chip gold">Lost Finals</span>` : s.res === "Playoffs" ? `<span class="chip">Playoffs</span>` : s.res === "–" ? `<span class="muted">Missed</span>` : `<span class="muted">–</span>`;
+    const serChip = (x) => `<span class="fr-ser ${x.done ? (x.won ? "won" : "lost") : ""}"><span class="fr-round">${esc(x.label)}</span> ${x.done ? (x.won ? "beat" : "lost to") : "vs"} <b>${esc(x.oppAbbr)}</b> ${x.wins}-${x.losses}</span>`;
+    const seasonsTable = `<div class="tablewrap"><table class="fr-seasons"><thead><tr><th>Season</th><th>Team</th><th class="num">W-L</th><th class="num">PCT</th><th>Result</th><th>Playoff run</th><th>Leading scorer</th></tr></thead><tbody>
+      ${h.seasons.map((s) => `<tr><td><b>${s.season}</b>${s.real ? ' <span class="chip" title="Real WNBA season, before your league began">real</span>' : ""}</td><td>${esc(s.name)}</td><td class="num">${s.w}-${s.l}</td><td class="num">${s.w + s.l ? (s.w / (s.w + s.l)).toFixed(3).replace(/^0/, "") : "–"}</td><td>${resChip(s)}</td>
+        <td><div class="fr-run">${s.series.length ? s.series.map(serChip).join("") : s.real && s.res == null ? '<span class="muted">No playoff data</span>' : '<span class="muted">–</span>'}</div></td>
+        <td>${s.top ? `${pn(s.top.pid, s.top.name)} <span class="muted">${s.top.pts} ppg</span>` : '<span class="muted">–</span>'}</td></tr>`).join("")}</tbody></table></div>`;
+    const LEAD = [["pts", "Points"], ["reb", "Rebounds"], ["ast", "Assists"], ["stl", "Steals"], ["blk", "Blocks"], ["gp", "Games played"], ["ppg", "Points per game (60+ games)"]];
+    const leaders = `<div class="fr-leaders">${LEAD.map(([k, lab]) => `<div class="fr-board"><span class="eyebrow">${lab}</span><ol>${h.leaders[k].map((x) => `<li><div class="fr-li"><span>${pn(x.pid, x.name)} <span class="muted">${x.from === x.to ? x.from : `${x.from}–${String(x.to).slice(2)}`}</span></span><b>${k === "ppg" ? x.v.toFixed(1) : x.v.toLocaleString()}</b></div></li>`).join("") || '<li class="muted">–</li>'}</ol></div>`).join("")}</div>`;
+    const best = `<div class="tablewrap"><table><thead><tr><th>#</th><th>Player</th><th>Season</th><th class="num">GP</th><th class="num">PPG</th><th class="num">RPG</th><th class="num">APG</th></tr></thead><tbody>${h.bestSeasons.map((l, i) => `<tr><td class="muted">${i + 1}</td><td>${pn(l.pid, l.name)}</td><td>${l.season}${l.real ? ' <span class="chip">real</span>' : ""}</td><td class="num">${l.gp}</td><td class="num"><b>${l.pts}</b></td><td class="num">${l.reb}</td><td class="num">${l.ast}</td></tr>`).join("")}</tbody></table></div>`;
+    // Awards grouped by award.
+    const g = {}; for (const a of h.awards) (g[a.award] ||= []).push(a);
+    const ORDER = ["MVP", "Finals MVP", "Defensive Player of the Year", "Rookie of the Year", "Sixth Player of the Year", "Most Improved Player", "All-WNBA First Team", "All-WNBA Second Team", "All-Defensive Team", "All-Rookie Team"];
+    const awards = h.awards.length ? `<div class="fr-awards">${ORDER.filter((k) => g[k]).map((k) => { const by = {}; for (const a of g[k]) (by[a.pid] ||= { a, ys: [] }).ys.push(a.season);
+      return `<div class="fr-board"><span class="eyebrow">${trophy(TROPHY_BY_NAME[k], "xs")}${esc(k)}</span><ul>${Object.values(by).sort((x, y) => y.ys.length - x.ys.length).map(({ a, ys }) => `<li><div class="fr-li"><span>${pn(a.pid, a.name)}</span><span class="muted">${ys.length > 1 ? ys.length + "x " : ""}(${yrs(ys.sort())})</span></div></li>`).join("")}</ul></div>`; }).join("")}</div>` : `<div class="empty">No awards with this franchise yet. Awards are tracked for seasons played in your league.</div>`;
+    // Playoff record by opponent.
+    const opp = {}; for (const x of h.series.filter((x) => x.done)) { const o = (opp[x.oppAbbr] ||= { abbr: x.oppAbbr, name: x.oppName, sw: 0, sl: 0, gw: 0, gl: 0 }); x.won ? o.sw++ : o.sl++; o.gw += x.wins; o.gl += x.losses; }
+    const oppRows = Object.values(opp).sort((a, b) => b.sw + b.sl - (a.sw + a.sl));
+    const oppTable = oppRows.length ? `<div class="tablewrap"><table><thead><tr><th>Opponent</th><th class="num">Series</th><th class="num">Games</th></tr></thead><tbody>${oppRows.map((o) => `<tr><td><b>${esc(o.abbr)}</b> <span class="muted">${esc(o.name)}</span></td><td class="num">${o.sw}-${o.sl}</td><td class="num">${o.gw}-${o.gl}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">No playoff series yet.</div>`;
+    return `<div class="fr">
+      <div class="fr-tiles">
+        ${tile("All-time record", `${sm.w}-${sm.l}`, `${pct} · ${sm.seasons} season${sm.seasons === 1 ? "" : "s"}${sm.realSeasons ? ` (${sm.realSeasons} real)` : ""}`)}
+        ${tile("Championships", sm.titles, sm.champYears.length ? yrs(sm.champYears) : "")}
+        ${tile("Finals trips", sm.finals)}
+        ${tile("Playoff appearances", sm.playoffs)}
+        ${tile("Playoff series", `${sm.seriesW}-${sm.seriesL}`, `games ${sm.gW}-${sm.gL}`)}
+        ${tile("Best season", sm.best ? `${sm.best.w}-${sm.best.l}` : "–", sm.best ? String(sm.best.season) : "")}
+      </div>
+      ${sm.names.length > 1 ? `<div class="sub">Also known as: ${sm.names.map(esc).join(" → ")}</div>` : ""}
+      <section><h3>Season by season</h3>${seasonsTable}<div class="sub">"real" seasons are the franchise's actual WNBA history before your league began, including real playoff results.</div></section>
+      <section><h3>All-time leaders</h3><div class="sub">Totals while with this franchise, real seasons included.</div>${leaders}</section>
+      <div class="fr-two"><section><h3>Best scoring seasons</h3>${best}</section><section><h3>Playoff record by opponent</h3>${oppTable}</section></div>
+      <section><h3>Franchise award winners</h3>${awards}</section>
+    </div>`;
   }
 
   // ---------- players ----------
@@ -914,9 +955,13 @@
       list.unshift({ season: S.season, pending: true, ...S.awards, finalsMvp: S.playoffs && S.playoffs.finalsMvp, champion: S.playoffs && S.playoffs.champion });
     return list;
   }
+  // A season's team snapshot (names and colors as they were that year).
+  const snapFor = (y) => ((GM.S.archive || {})[y] || {}).teams || {};
+  const teamThen = (id, y) => { const f = GM.teamAt(id, y); if (!f) return ""; const sn = snapFor(y); return snapBadge(sn, f); };
   function renderAwards() {
     const list = awardEntries();
-    const who = (id, withTeam = true) => { const p = id && GM.P(id); if (!p) return `<span class="muted">–</span>`; return `${plink(p)}`; };
+    const who = (id) => { const p = id && GM.P(id); if (!p) return `<span class="muted">–</span>`; return `${plink(p)}`; };
+    const whoT = (id, y) => { const p = id && GM.P(id); if (!p) return `<span class="muted">–</span>`; return `<span class="aw-who">${teamThen(id, y)}${plink(p)}</span>`; };
     const SINGLE = [["mvp", "MVP"], ["finalsMvp", "Finals MVP"], ["dpoy", "Defensive Player"], ["roy", "Rookie of the Year"], ["smoy", "Sixth Player"], ["mip", "Most Improved"]];
     const anyTrophy = TROPHIES.some(([k]) => logos["tr:" + k]);
     const TEAMS = [["allFirst", "All-WNBA First Team"], ["allSecond", "All-WNBA Second Team"], ["allDef", "All-Defensive Team"], ["allRookie", "All-Rookie Team"]];
@@ -925,12 +970,12 @@
     let body;
     if (view === "award") {
       body = `<section class="panel"><div class="tablewrap"><table><thead><tr><th>Season</th>${SINGLE.map(([k, l]) => `<th><span class="th-trophy">${trophy(k, "xs")}${l}</span></th>`).join("")}</tr></thead><tbody>
-        ${list.map((h) => `<tr><td><b>${h.season}</b></td>${SINGLE.map(([k]) => `<td>${who(h[k])}</td>`).join("")}</tr>`).join("")}</tbody></table></div></section>`;
+        ${list.map((h) => `<tr><td><b>${h.season}</b></td>${SINGLE.map(([k]) => `<td>${whoT(h[k], h.season)}</td>`).join("")}</tr>`).join("")}</tbody></table></div></section>`;
     } else {
       body = list.map((h) => `<section class="panel award-season">
         <div class="panel-head"><h2>${h.season}</h2>${h.champion ? `<span class="row">${trophy("champion", "sm")}${badge(h.champion)} <span class="sub">${esc(h.champName || GM.teamName(h.champion))} won the title</span></span>` : h.pending ? `<span class="chip accent">Playoffs in progress</span>` : ""}</div>
-        <div class="award-grid">${SINGLE.map(([k, l]) => `<div class="award-tile${logos["tr:" + k] ? " has-trophy" : ""}">${trophy(k, "md")}<span class="eyebrow">${l}</span><div>${who(h[k])}</div>${h[k] && GM.P(h[k]) ? `<span class="sub">${esc(GM.T(GM.P(h[k]).team)?.abbr || "")}</span>` : ""}</div>`).join("")}</div>
-        <div class="team-grid">${TEAMS.map(([k, l]) => `<div class="team-list"><span class="eyebrow">${trophy(k, "xs")}${l}</span>${(h[k] || []).length ? `<ol>${h[k].map((id) => `<li>${who(id)}</li>`).join("")}</ol>` : `<div class="muted">–</div>`}</div>`).join("")}</div>
+        <div class="award-grid">${SINGLE.map(([k, l]) => `<div class="award-tile${logos["tr:" + k] ? " has-trophy" : ""}">${trophy(k, "md")}<span class="eyebrow">${l}</span><div>${who(h[k])}</div>${h[k] && GM.P(h[k]) ? (() => { const f = GM.teamAt(h[k], h.season), sn = snapFor(h.season), tt = sn[f] || GM.T(f); return f ? `<span class="sub aw-team">${snapBadge(sn, f)} ${esc(tt ? `${tt.city} ${tt.name}` : "")}</span>` : ""; })() : ""}</div>`).join("")}</div>
+        <div class="team-grid">${TEAMS.map(([k, l]) => `<div class="team-list"><span class="eyebrow">${trophy(k, "xs")}${l}</span>${(h[k] || []).length ? `<ol>${h[k].map((id) => `<li>${whoT(id, h.season)}</li>`).join("")}</ol>` : `<div class="muted">–</div>`}</div>`).join("")}</div>
       </section>`).join("");
     }
     $("#view").innerHTML = `<div class="row" style="justify-content:space-between"><div class="seg"><button class="${view === "season" ? "on" : ""}" data-act="awardsView" data-v="season">By season</button><button class="${view === "award" ? "on" : ""}" data-act="awardsView" data-v="award">By award</button></div><button class="btn small" data-act="tab" data-tab="settings" data-scroll="trophies">${anyTrophy ? "Change trophy images" : "Add trophy images"}</button></div>${body}`;
@@ -1005,13 +1050,14 @@
       case "box": ui.modal = { type: "box", season: +el.dataset.season, id: el.dataset.gid }; break;
       case "schedView": ui.sched.view = el.dataset.v; break;
       case "awardsView": ui.awardsView = el.dataset.v; break;
+      case "teamView": ui.teamView = el.dataset.v; break;
       case "txType": ui.tx.type = el.dataset.v; ui.tx.limit = 120; break;
       case "txMore": ui.tx.limit += 150; break;
       case "recView": ui.recView = el.dataset.v; break;
       case "poGames": ui.sched = { season: ui.poSeason, team: "all", view: "playoffs" }; ui.tab = "schedule"; window.scrollTo(0, 0); break;
       case "teamSched": ui.sched = { season: GM.S.season, team: id, view: "regular" }; ui.tab = "schedule"; ui.modal = null; window.scrollTo(0, 0); break;
       case "clearLogo": delete logos[el.dataset.key]; saveLogos(); toast("Logo removed."); break;
-      case "team": ui.modal = { type: "team", id }; ui.confirm = null; break;
+      case "team": ui.modal = { type: "team", id }; ui.confirm = null; ui.teamView = "roster"; break;
       case "closeModal": ui.modal = null; ui.confirm = null; break;
       case "sort": { const k = el.dataset.key, c = el.dataset.col, cur = ui.sort[k]; ui.sort[k] = { col: c, dir: cur && cur.col === c ? -cur.dir : -1, get: getters[c] }; break; }
       case "startSeason": { const r = GM.startSeason(); if (!r.ok) toast(r.msg || "Can't start yet.", true); break; }

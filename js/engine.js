@@ -1423,8 +1423,115 @@
     return ys.sort((a, b) => b - a);
   };
 
+  // The team a player was on in a given season (awards, history): the season's stat line,
+  // not where she plays now.
+  function teamAt(pid, y) {
+    const p = P(pid);
+    if (p) {
+      const c = p.career.find((e) => e.season === y);
+      if (c && c.team) return c.team;
+      if (p.stats[y] && p.stats[y].team) return p.stats[y].team;
+    }
+    const l = realLine(pid, y);
+    if (l) return l[F.fid];
+    return p && y === S.season ? p.team : null;
+  }
+
+  // Everything about one franchise: every season (real ones before the league began, then
+  // simulated ones), playoff series, all-time leaders, award winners and best seasons.
+  function franchiseHistory(fid) {
+    const t = T(fid); if (!t) return null;
+    const pname = (pid) => (P(pid) ? P(pid).name : (REAL[pid] && REAL[pid].n) || "Unknown");
+    const seasons = [];
+    // Real seasons before the league started.
+    for (const y of Object.keys(D.teams).map(Number).filter((y) => y < S.startYear).sort((a, b) => a - b)) {
+      const rt = D.teams[y].find((x) => x.fid === fid); if (!rt) continue;
+      const rs = ((D.playoffs || {})[y] || []);
+      const mine = rs.filter((x) => x[0] === fid || x[1] === fid).map(([ta, tb, wa, wb, , lab]) => {
+        const me = ta === fid, opp = me ? tb : ta, ot = D.teams[y].find((x) => x.fid === opp) || {};
+        const wins = me ? wa : wb, losses = me ? wb : wa;
+        return { label: lab, opp, oppAbbr: ot.abbr || opp, oppName: ot.city ? `${ot.city} ${ot.name}` : opp, wins, losses, done: true, won: wins > losses, final: lab === "Finals" };
+      });
+      const fin = mine.find((x) => x.final);
+      const res = !rs.length ? null : fin ? (fin.won ? "Champion" : "Finals") : mine.length ? "Playoffs" : "–";
+      seasons.push({ season: y, real: true, name: `${rt.city} ${rt.name}`, abbr: rt.abbr, w: rt.w, l: rt.l, conf: rt.conf, res, series: mine });
+    }
+    // Simulated seasons.
+    const done = new Set();
+    for (const h of t.hist) {
+      done.add(h.season);
+      const ser = ((S.archive || {})[h.season]?.playoffs || []).filter((x) => x.hi === fid || x.lo === fid);
+      seasons.push({ season: h.season, real: false, name: h.name, abbr: h.abbr, w: h.w, l: h.l, conf: h.conf, res: h.res, series: ser.map((x) => serInfo(x, fid, h.season)) });
+    }
+    if (t.active && !done.has(S.season) && (S.phase === "regular" || S.phase === "playoffs")) {
+      const ser = (S.playoffs ? playoffSummary(S.playoffs) : []).filter((x) => x.hi === fid || x.lo === fid);
+      seasons.push({ season: S.season, real: false, live: true, name: `${t.city} ${t.name}`, abbr: t.abbr, w: t.w, l: t.l, conf: t.conf, res: null, series: ser.map((x) => serInfo(x, fid, S.season)) });
+    }
+    // Player-seasons for this franchise.
+    const lines = [];
+    for (const rp of D.players) for (const y in rp.s) {
+      if (+y >= S.startYear) continue;
+      const l = rp.s[y]; if (l[F.fid] !== fid) continue;
+      lines.push({ pid: rp.id, season: +y, gp: l[F.gp], pts: l[F.pts], reb: l[F.reb], ast: l[F.ast], stl: l[F.stl], blk: l[F.blk], real: true });
+    }
+    for (const p of Object.values(S.players)) {
+      for (const c of p.career) if (c.team === fid) lines.push({ pid: p.id, season: c.season, gp: c.gp, pts: c.pts, reb: c.reb, ast: c.ast, stl: c.stl, blk: c.blk });
+      if (!p.career.some((c) => c.season === S.season)) { const g = perGame(p); if (g && g.team === fid) lines.push({ pid: p.id, season: S.season, gp: g.gp, pts: g.pts, reb: g.reb, ast: g.ast, stl: g.stl, blk: g.blk, live: true }); }
+    }
+    // Totals per player.
+    const tot = {};
+    for (const l of lines) {
+      const x = (tot[l.pid] ||= { pid: l.pid, name: pname(l.pid), gp: 0, pts: 0, reb: 0, ast: 0, stl: 0, blk: 0, seasons: 0, from: l.season, to: l.season });
+      x.gp += l.gp; x.seasons++; x.from = Math.min(x.from, l.season); x.to = Math.max(x.to, l.season);
+      for (const k of ["pts", "reb", "ast", "stl", "blk"]) x[k] += l[k] * l.gp;
+    }
+    const all = Object.values(tot);
+    const top = (k, n = 10) => all.filter((x) => x[k] > 0).sort((a, b) => b[k] - a[k]).slice(0, n).map((x) => ({ ...x, v: Math.round(x[k]) }));
+    const leaders = { pts: top("pts"), reb: top("reb"), ast: top("ast"), stl: top("stl"), blk: top("blk"), gp: top("gp"),
+      ppg: all.filter((x) => x.gp >= 60).map((x) => ({ ...x, v: Math.round((x.pts / x.gp) * 10) / 10 })).sort((a, b) => b.v - a.v).slice(0, 10) };
+    // Each season's leading scorer, and the best scoring seasons.
+    const bySeason = {};
+    for (const l of lines) if (l.gp >= 8 && (!bySeason[l.season] || l.pts > bySeason[l.season].pts)) bySeason[l.season] = l;
+    for (const s of seasons) { const b = bySeason[s.season]; s.top = b ? { pid: b.pid, name: pname(b.pid), pts: b.pts } : null; }
+    const bestSeasons = lines.filter((l) => l.gp >= 15).sort((a, b) => b.pts - a.pts).slice(0, 10).map((l) => ({ ...l, name: pname(l.pid) }));
+    // Award winners while with the franchise.
+    const awards = [];
+    const NAMES = { mvp: "MVP", finalsMvp: "Finals MVP", dpoy: "Defensive Player of the Year", roy: "Rookie of the Year", smoy: "Sixth Player of the Year", mip: "Most Improved Player" };
+    const TEAMS = { allFirst: "All-WNBA First Team", allSecond: "All-WNBA Second Team", allDef: "All-Defensive Team", allRookie: "All-Rookie Team" };
+    for (const h of S.history) {
+      for (const k in NAMES) if (h[k] && teamAt(h[k], h.season) === fid) awards.push({ season: h.season, award: NAMES[k], pid: h[k], name: pname(h[k]), major: true });
+      for (const k in TEAMS) for (const id of h[k] || (k === "allFirst" ? h.allLeague || [] : [])) if (teamAt(id, h.season) === fid) awards.push({ season: h.season, award: TEAMS[k], pid: id, name: pname(id) });
+    }
+    awards.sort((a, b) => b.season - a.season);
+    // Summary.
+    const sim = seasons.filter((s) => !s.real && !s.live);
+    const done2 = seasons.filter((s) => !s.live && s.res);
+    const W = sum(seasons.filter((s) => !s.live).map((s) => s.w)), L = sum(seasons.filter((s) => !s.live).map((s) => s.l));
+    const serAll = seasons.flatMap((s) => s.series.map((x) => ({ ...x, season: s.season })));
+    const best = seasons.filter((s) => !s.live && s.w + s.l).sort((a, b) => b.w / (b.w + b.l) - a.w / (a.w + a.l))[0] || null;
+    const summary = {
+      seasons: seasons.filter((s) => !s.live).length, realSeasons: seasons.filter((s) => s.real).length, w: W, l: L,
+      titles: done2.filter((s) => s.res === "Champion").length, finals: done2.filter((s) => s.res === "Champion" || s.res === "Finals").length,
+      playoffs: done2.filter((s) => s.res && s.res !== "–").length, simSeasons: sim.length, simTitles: sim.filter((s) => s.res === "Champion").length,
+      champYears: done2.filter((s) => s.res === "Champion").map((s) => s.season).sort((a, b) => a - b),
+      seriesW: serAll.filter((x) => x.done && x.won).length, seriesL: serAll.filter((x) => x.done && !x.won).length,
+      gW: sum(serAll.map((x) => x.wins)), gL: sum(serAll.map((x) => x.losses)),
+      best: best ? { season: best.season, w: best.w, l: best.l } : null,
+      names: [...new Set(seasons.map((s) => s.name))],
+    };
+    return { fid, seasons: seasons.reverse(), series: serAll.reverse(), leaders, bestSeasons, awards, summary };
+  }
+  function serInfo(x, fid, season) {
+    const isHi = x.hi === fid, opp = isHi ? x.lo : x.hi;
+    const snap = (S.archive || {})[season]?.teams || {};
+    const ot = snap[opp] || T(opp) || {};
+    return { label: x.label, opp, oppAbbr: ot.abbr || opp, oppName: ot.name ? `${ot.city ? ot.city + " " : ""}${ot.name}` : teamName(opp),
+      seed: isHi ? x.seedHi : x.seedLo, oppSeed: isHi ? x.seedLo : x.seedHi,
+      wins: isHi ? x.wh : x.wl, losses: isHi ? x.wl : x.wh, done: !!x.winner, won: x.winner === fid, bestOf: x.bestOf, final: x.label === "Finals" };
+  }
+
   window.GM = {
-    recordBook, seasonGames, archivedSeasons, seasonBracket, bracketSeasons, init, getKV, setKV, hasDB, realScheduleStatus, flush,
+    recordBook, franchiseHistory, teamAt, seasonGames, archivedSeasons, seasonBracket, bracketSeasons, init, getKV, setKV, hasDB, realScheduleStatus, flush,
     get S() { return S; }, data: D, F, get saveError() { return saveError; },
     newLeague, load, save, importState, clearSave, previewSeason, eraRules,
     P, T, activeTeams, teamName, roster, freeAgents, payroll, capSpace, econ, age, teamRating, powerRanks, teamMode, rotation,

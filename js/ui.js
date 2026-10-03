@@ -305,7 +305,7 @@
       + `<div class="sub">The dashed line marks the playoff cut (${cutConf ? `top ${per} per conference` : `top ${per} overall`}). Teams tied on record are separated by head-to-head record among the tied teams, then record against teams at .500 or better, then point differential, then a coin flip; "TB" shows which one decided it.${br ? ` In real life, ${S.season}'s best record belonged to ${esc(br.city)} ${esc(br.name)} at ${br.w}-${br.l}.` : ""}</div>`;
   }
   // ---------- visual bracket ----------
-  const BK = { CW: 200, CH: 62, VG: 18, HG: 44, TOP: 34 };
+  const BK = { CW: 190, CH: 62, VG: 18, HG: 36, TOP: 34 };
   // Every round of a bracket, with not-yet-played rounds filled in as pending slots.
   function fullRounds(br) {
     const out = [];
@@ -443,8 +443,9 @@
         ${years.length > 1 ? `<select id="poSeason" aria-label="Season">${years.map((y) => `<option ${y === ui.poSeason ? "selected" : ""}>${y}</option>`).join("")}</select>` : ""}</div>
       ${sb ? bracketChart(sb.po, sb.teams) : `<div class="empty">No bracket for this season.</div>`}
       ${live && S.phase === "playoffs" && !S.playoffs.champion ? `<div class="row"><button class="btn" data-act="po" data-mode="game">Sim one game</button><button class="btn" data-act="po" data-mode="round">Sim round</button><button class="btn primary" data-act="po" data-mode="all">Sim to champion</button></div>` : ""}
-      ${sb && !sb.po.projected ? `<div class="row"><button class="btn small" data-act="poGames">Game-by-game results</button></div>` : ""}
-    </section>`;
+    </section>
+    ${(() => { if (!sb || sb.po.projected) return ""; const sg = GM.seasonGames(ui.poSeason); const ser = sg ? sg.playoffs : [];
+      return ser.length ? `<section class="panel"><div class="panel-head"><h2>Series results</h2><span class="sub">Every game, with box scores${Object.keys(sg.boxes).length ? "" : " (kept for the current and previous season)"}</span></div><div class="series-grid">${ser.slice().reverse().map((s) => seriesCard(sg, s)).join("")}</div></section>` : ""; })()}`;
   }
 
   // ---------- teams ----------
@@ -544,11 +545,66 @@
         ${upcoming.length ? `<div class="sub">These players were in the real ${y} draft. In your league they're drafted in the order your standings and lottery produce.</div><div class="tablewrap"><table><tbody>${upcoming.slice(0, 40).map((p) => `<tr><td class="muted">${p.dn ? `real #${p.dn}` : ""}</td><td>${esc(p.n)}</td><td class="muted">${esc(p.col && p.col !== "None" ? p.col : p.ctry)}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">${y > D.last ? "From here on, draft classes are generated." : "No real draftees found for this year."}</div>`}
       </section></div>`;
   }
+  // ---------- transactions ----------
+  const TX_TYPES = [["all", "All moves"], ["trade", "Trades"], ["sign", "Signings"], ["resign", "Re-signings"], ["draft", "Draft"], ["waive", "Waivers"], ["leave", "Departures"], ["expansion", "Expansion & dispersal"], ["retire", "Retirements"]];
+  const TX_LABEL = { trade: "Trade", sign: "Signed", resign: "Re-signed", draft: "Drafted", waive: "Waived", leave: "Left in FA", expansion: "Expansion draft", dispersal: "Dispersal draft", retire: "Retired" };
+  function txTeam(x, fid) {
+    const snap = (x.tm && x.tm[fid]) || {};
+    if (GM.T(fid) && logos[fid]) return badge(fid);
+    return snap.abbr ? badgeRaw(snap.abbr, snap.color || "#666") : badge(fid);
+  }
+  const txTeamName = (x, fid) => esc((x.tm && x.tm[fid] && x.tm[fid].name) || GM.teamName(fid));
+  function txPlayer(pp) {
+    if (!pp) return "";
+    const live = GM.P(pp.id);
+    const name = live ? `<button class="plink" data-act="player" data-id="${pp.id}">${esc(pp.n)}</button>` : `<b>${esc(pp.n)}</b>`;
+    return `<span class="tx-player">${ovr(pp.o)}<span class="tx-pn">${name}<span class="sub">${esc(pp.pos || "")} · age ${pp.a}</span></span></span>`;
+  }
+  const txContract = (c) => (c && c.sal ? `<span class="tx-contract">${money(c.sal)}<span> × ${c.yrs} yr${c.yrs === 1 ? "" : "s"}</span></span>` : "");
+  function txCard(x) {
+    const type = x.type === "dispersal" ? "expansion" : x.type;
+    if (!x.type) return `<div class="tx-card"><span class="tx-type">Move</span><div class="tx-body"><span>${esc(x.text)}</span></div></div>`;
+    let body = "";
+    if (x.type === "trade") {
+      const side = (fid, gets) => `<div class="tx-side"><div class="tx-team">${txTeam(x, fid)}<b>${txTeamName(x, fid)}</b><span class="sub">receive</span></div><div class="tx-players">${gets.map(txPlayer).join("")}</div></div>`;
+      body = `<div class="tx-trade">${side(x.a, x.aGets || [])}<div class="tx-swap" aria-hidden="true">⇄</div>${side(x.b, x.bGets || [])}</div>`;
+    } else if (x.type === "draft") {
+      body = `<div class="tx-line"><div class="tx-team">${txTeam(x, x.team)}<b>${txTeamName(x, x.team)}</b></div><span class="tx-pick">${x.draftYear || ""} · Rd ${x.round} · #${x.pick}</span><span class="tx-arrow">→</span>${txPlayer(x.p)}<span class="sub">${esc(x.p?.school || "")}${x.p && !x.p.real ? " · generated" : ""}</span><span class="spacer"></span>${txContract(x.c)}</div>`;
+    } else if (x.type === "sign" || x.type === "resign") {
+      body = `<div class="tx-line"><div class="tx-team">${txTeam(x, x.team)}<b>${txTeamName(x, x.team)}</b></div><span class="tx-arrow">←</span>${txPlayer(x.p)}<span class="spacer"></span>${txContract(x.c)}</div>`;
+    } else if (x.type === "waive" || x.type === "leave") {
+      body = `<div class="tx-line"><div class="tx-team">${txTeam(x, x.team)}<b>${txTeamName(x, x.team)}</b></div><span class="tx-arrow out">→</span>${txPlayer(x.p)}<span class="tx-arrow out">→</span><span class="chip">Free agency</span></div>`;
+    } else if (x.type === "expansion" || x.type === "dispersal") {
+      body = `<div class="tx-line"><div class="tx-team">${txTeam(x, x.from)}<span class="sub">${txTeamName(x, x.from)}</span></div><span class="tx-arrow">→</span>${txPlayer(x.p)}<span class="tx-arrow">→</span><div class="tx-team">${txTeam(x, x.team)}<b>${txTeamName(x, x.team)}</b></div><span class="spacer"></span>${txContract(x.c)}</div>`;
+    } else if (x.type === "retire") {
+      body = `<div class="tx-line">${txPlayer(x.p)}${x.team ? `<span class="sub">from</span><div class="tx-team">${txTeam(x, x.team)}<span class="sub">${txTeamName(x, x.team)}</span></div>` : `<span class="sub">as a free agent</span>`}<span class="spacer"></span><span class="sub">${x.seasons ? `${x.seasons} season${x.seasons === 1 ? "" : "s"}` : ""}${x.awards ? ` · ${x.awards} honor${x.awards === 1 ? "" : "s"}` : ""}</span></div>`;
+    } else body = `<span>${esc(x.text)}</span>`;
+    return `<div class="tx-card t-${type}"><span class="tx-type t-${type}">${TX_LABEL[x.type] || "Move"}</span><div class="tx-body">${body}</div></div>`;
+  }
   function renderMoves() {
     const S = GM.S;
-    const list = S.transactions.filter((x) => ui.txTeam === "all" || x.team === ui.txTeam).slice(0, 200);
-    $("#view").innerHTML = `<section class="panel"><div class="panel-head"><h2>Transactions</h2><select id="txTeam" aria-label="Team filter"><option value="all">All teams</option>${S.teams.map((t) => `<option value="${t.fid}" ${ui.txTeam === t.fid ? "selected" : ""}>${esc(t.city)} ${esc(t.name)}</option>`).join("")}</select></div>
-      <div class="news" style="max-height:none">${list.map((x) => `<div><span class="when">${x.season} ${(phaseLabel[x.phase] || "").slice(0, 3).toUpperCase()}</span>${esc(x.text)}</div>`).join("") || `<div class="empty">No transactions yet.</div>`}</div></section>`;
+    const f = ui.tx || (ui.tx = { type: "all", team: "all", season: "all", limit: 120 });
+    const typeOk = (x) => f.type === "all" || x.type === f.type || (f.type === "expansion" && x.type === "dispersal");
+    const teamOk = (x) => f.team === "all" || x.team === f.team || (x.involved || []).includes(f.team);
+    const seasons = [...new Set(S.transactions.map((x) => x.season))].sort((a, b) => b - a);
+    const all = S.transactions.filter((x) => typeOk(x) && teamOk(x) && (f.season === "all" || x.season === +f.season));
+    const list = all.slice(0, f.limit);
+    const counts = {}; for (const x of S.transactions.filter((x) => teamOk(x) && (f.season === "all" || x.season === +f.season))) { const k = x.type === "dispersal" ? "expansion" : x.type || "other"; counts[k] = (counts[k] || 0) + 1; }
+    const phaseOrder = (p) => ({ playoffs: "Playoffs", regular: "Regular season", preseason: "Preseason", offseason: "Offseason" }[p] || "");
+    let html = "", lastKey = "";
+    for (const x of list) {
+      const key = `${x.season}-${x.phase}`;
+      if (key !== lastKey) { html += `<div class="tx-group"><b>${x.season}</b> ${phaseOrder(x.phase)}</div>`; lastKey = key; }
+      html += txCard(x);
+    }
+    $("#view").innerHTML = `<section class="panel">
+      <div class="panel-head"><div><h2>Transactions</h2><div class="sub">${all.length} move${all.length === 1 ? "" : "s"}${f.team !== "all" ? ` involving the ${esc(GM.teamName(f.team))}` : ""}</div></div>
+        <div class="row"><select id="txSeason" aria-label="Season"><option value="all">All seasons</option>${seasons.map((y) => `<option ${String(y) === String(f.season) ? "selected" : ""}>${y}</option>`).join("")}</select>
+        <select id="txTeam" aria-label="Team filter"><option value="all">All teams</option>${S.teams.map((t) => `<option value="${t.fid}" ${f.team === t.fid ? "selected" : ""}>${esc(t.city)} ${esc(t.name)}</option>`).join("")}</select></div></div>
+      <div class="tx-filters">${TX_TYPES.map(([k, l]) => `<button class="tx-filter t-${k} ${f.type === k ? "on" : ""}" data-act="txType" data-v="${k}">${l}${k !== "all" && counts[k] ? ` <span>${counts[k]}</span>` : ""}</button>`).join("")}</div>
+      <div class="tx-list">${html || `<div class="empty">No moves match these filters.</div>`}</div>
+      ${all.length > list.length ? `<div class="row"><button class="btn" data-act="txMore">Show more (${all.length - list.length} left)</button></div>` : ""}
+    </section>`;
   }
   function renderHistory() {
     const S = GM.S;
@@ -810,16 +866,16 @@
     let body = "";
     if (view === "game") {
       body = `<div class="sub">Single-game records from games played in your league since ${S.startYear}. (Real box scores before ${S.startYear} aren't in the data.)</div>
-        <div class="rec-grid">${["pts", "reb", "ast", "stl", "blk", "tpm"].map((k) => card(STAT[k], rb.game[k] || [], (e) => `<td>${pname(e)} <span class="muted">${esc(e.abbr)} vs ${esc(e.opp)}</span></td><td class="muted">${e.season}${e.po ? " PO" : ""}</td><td class="num rv">${e.v}</td>`)).join("")}
+        <div class="rec-grid">${["pts", "reb", "ast", "stl", "blk", "tpm"].map((k) => card(STAT[k], rb.game[k] || [], (e) => `<td class="rec-who">${pname(e)}<span class="sub">${esc(e.abbr)} vs ${esc(e.opp)}</span></td><td class="muted rec-when">${e.season}${e.po ? `<span class="sub">Playoffs</span>` : ""}</td><td class="num rv">${e.v}</td>`)).join("")}
         ${card("Team points (most)", rb.teamGame.high, (e) => `<td>${esc(e.abbr)} <span class="muted">vs ${esc(e.opp)}</span></td><td class="muted">${e.season}${e.po ? " PO" : ""}</td><td class="num rv">${e.v}</td>`)}
         ${card("Team points (fewest)", rb.teamGame.low, (e) => `<td>${esc(e.abbr)} <span class="muted">vs ${esc(e.opp)}</span></td><td class="muted">${e.season}${e.po ? " PO" : ""}</td><td class="num rv">${e.v}</td>`)}
         ${card("Largest margin", rb.teamGame.margin, (e) => `<td>${esc(e.abbr)} <span class="muted">${esc(e.score)} vs ${esc(e.opp)}</span></td><td class="muted">${e.season}${e.po ? " PO" : ""}</td><td class="num rv">+${e.v}</td>`)}</div>`;
     } else if (view === "season") {
       body = `<div class="sub">Per-game averages in a season (at least half the season's games). Includes real seasons before ${S.startYear}.</div>
-        <div class="rec-grid">${["pts", "reb", "ast", "stl", "blk"].map((k) => card(`${STAT[k]} per game`, rb.season[k], (e) => `<td>${pname(e)} <span class="muted">${esc(e.team)}</span></td><td class="muted">${e.season}${e.real ? " ·real" : ""}</td><td class="num rv">${(+e[k]).toFixed(1)}</td>`)).join("")}</div>`;
+        <div class="rec-grid">${["pts", "reb", "ast", "stl", "blk"].map((k) => card(`${STAT[k]} per game`, rb.season[k], (e) => `<td class="rec-who">${pname(e)}<span class="sub">${esc(e.team)}</span></td><td class="muted rec-when">${e.season}${e.real ? `<span class="sub">real</span>` : ""}</td><td class="num rv">${(+e[k]).toFixed(1)}</td>`)).join("")}</div>`;
     } else if (view === "career") {
       body = `<div class="sub">Career totals across real seasons before ${S.startYear} and every season played in your league. Pre-${S.startYear} totals are rebuilt from per-game averages, so they can be off by a few.</div>
-        <div class="rec-grid">${["pts", "reb", "ast", "stl", "blk", "gp"].map((k) => card(STAT[k], rb.career[k], (e) => `<td>${pname(e)} <span class="muted">${e.first}–${e.last}</span></td><td class="num rv">${e[k].toLocaleString()}</td>`)).join("")}</div>`;
+        <div class="rec-grid">${["pts", "reb", "ast", "stl", "blk", "gp"].map((k) => card(STAT[k], rb.career[k], (e) => `<td class="rec-who">${pname(e)}<span class="sub">${e.first}–${e.last}</span></td><td class="num rv">${e[k].toLocaleString()}</td>`)).join("")}</div>`;
     } else {
       const tl = (e) => `<td>${esc(e.name)}</td><td class="muted">${e.season}${e.real ? " ·real" : ""}</td><td class="num rv">${e.w}-${e.l}</td>`;
       body = `<div class="rec-grid">${card("Best records", rb.bestTeams, tl)}${card("Worst records", rb.worstTeams, tl)}
@@ -871,6 +927,8 @@
       case "box": ui.modal = { type: "box", season: +el.dataset.season, id: el.dataset.gid }; break;
       case "schedView": ui.sched.view = el.dataset.v; break;
       case "awardsView": ui.awardsView = el.dataset.v; break;
+      case "txType": ui.tx.type = el.dataset.v; ui.tx.limit = 120; break;
+      case "txMore": ui.tx.limit += 150; break;
       case "recView": ui.recView = el.dataset.v; break;
       case "poGames": ui.sched = { season: ui.poSeason, team: "all", view: "playoffs" }; ui.tab = "schedule"; window.scrollTo(0, 0); break;
       case "teamSched": ui.sched = { season: GM.S.season, team: id, view: "regular" }; ui.tab = "schedule"; ui.modal = null; window.scrollTo(0, 0); break;
@@ -925,7 +983,8 @@
     else if (el.id === "optCareers") { GM.S.opts.realCareers = el.checked; GM.save(); }
     else if (el.id === "newsKind") { ui.newsKind = el.value; render(); }
     else if (el.id === "pteam") { ui.players.team = el.value; render(); }
-    else if (el.id === "txTeam") { ui.txTeam = el.value; render(); }
+    else if (el.id === "txTeam") { ui.tx.team = el.value; ui.tx.limit = 120; render(); }
+    else if (el.id === "txSeason") { ui.tx.season = el.value; ui.tx.limit = 120; render(); }
     else if (el.id === "poSeason") { ui.poSeason = +el.value; render(); }
     else if (el.id === "schedSeason") { ui.sched.season = +el.value; render(); }
     else if (el.id === "schedTeam") { ui.sched.team = el.value; render(); }

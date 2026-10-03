@@ -298,7 +298,10 @@ tr.tot td { font-weight: 700; background: var(--surface-2); }
 .team-list ol { margin: 0; padding-left: 18px; display: grid; gap: 3px; font-size: 0.86rem; }
 
 /* records */
-.rec-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
+.rec-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr)); gap: 14px; }
+td.rec-who { white-space: normal; width: 100%; }
+td.rec-who .sub, td.rec-when .sub { display: block; font-size: 0.74rem; }
+td.rec-when { text-align: right; }
 .rec-card { gap: 8px; }
 table.rec td { padding: 5px 6px; }
 td.rk { width: 22px; color: var(--muted); font-size: 0.78rem; }
@@ -353,6 +356,47 @@ details summary { padding: 4px 0; }
 .bk-w { font-family: var(--font-display); font-size: 1.1rem; min-width: 12px; text-align: right; }
 .bk-champ { position: absolute; border: 1px solid color-mix(in srgb, var(--gold) 40%, transparent); background: var(--gold-soft); border-radius: 12px; padding: 10px 12px; display: grid; gap: 6px; justify-items: center; text-align: center; box-shadow: var(--shadow); }
 .bk-champ .eyebrow { color: var(--gold); }
+
+/* transactions */
+.tx-filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.tx-filter { border: 1px solid var(--line); background: var(--surface); border-radius: 99px; padding: 5px 12px; font-size: 0.8rem; font-weight: 600; color: var(--muted); cursor: pointer; }
+.tx-filter span { font-weight: 700; color: var(--ink); margin-left: 2px; }
+.tx-filter:hover { border-color: var(--muted); }
+.tx-filter.on { background: var(--ink); border-color: var(--ink); color: var(--surface); }
+.tx-filter.on span { color: var(--surface); }
+.tx-list { display: grid; gap: 8px; }
+.tx-group { font-size: 0.8rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; font-weight: 600; padding: 10px 2px 2px; border-bottom: 1px solid var(--line); }
+.tx-group b { color: var(--ink); font-family: var(--font-display); font-size: 1.15rem; letter-spacing: 0.02em; margin-right: 6px; }
+.tx-card { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 12px; align-items: center; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--surface); transition: border-color 0.15s, box-shadow 0.15s; }
+.tx-card:hover { border-color: var(--line-strong); box-shadow: var(--shadow); }
+@media (max-width: 700px) { .tx-card { grid-template-columns: minmax(0, 1fr); } }
+.tx-type { justify-self: start; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; padding: 4px 10px; border-radius: 99px; background: var(--surface-3); color: var(--muted); white-space: nowrap; }
+.t-trade.tx-type, .tx-filter.t-trade.on { background: #6d4ad8; border-color: #6d4ad8; color: #fff; }
+.t-sign.tx-type, .tx-filter.t-sign.on { background: var(--good); border-color: var(--good); color: #fff; }
+.t-resign.tx-type, .tx-filter.t-resign.on { background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good); border-color: transparent; }
+.t-draft.tx-type, .tx-filter.t-draft.on { background: var(--tier-2); border-color: var(--tier-2); color: #fff; }
+.t-waive.tx-type, .tx-filter.t-waive.on { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad); border-color: transparent; }
+.t-leave.tx-type, .tx-filter.t-leave.on { background: color-mix(in srgb, var(--warn) 16%, transparent); color: var(--warn); border-color: transparent; }
+.t-expansion.tx-type, .tx-filter.t-expansion.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.t-retire.tx-type, .tx-filter.t-retire.on { background: var(--court); border-color: var(--court); color: var(--court-ink); }
+.tx-body { min-width: 0; }
+.tx-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.tx-team { display: inline-flex; align-items: center; gap: 8px; }
+.tx-team b { font-weight: 600; }
+.tx-arrow { color: var(--good); font-weight: 700; font-size: 1.1rem; }
+.tx-arrow.out { color: var(--bad); }
+.tx-player { display: inline-flex; align-items: center; gap: 8px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 4px 10px 4px 5px; }
+.tx-player .ovr { font-size: 0.9rem; min-width: 26px; padding: 1px 4px; }
+.tx-pn { display: grid; line-height: 1.2; }
+.tx-pn .sub { font-size: 0.72rem; }
+.tx-contract { font-family: var(--font-display); font-size: 1.05rem; font-weight: 700; }
+.tx-contract span { font-family: var(--font-body); font-size: 0.78rem; font-weight: 500; color: var(--muted); }
+.tx-pick { font-size: 0.78rem; font-weight: 700; color: var(--tier-2); background: color-mix(in srgb, var(--tier-2) 12%, transparent); padding: 3px 9px; border-radius: 99px; }
+.tx-trade { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 12px; align-items: center; }
+@media (max-width: 700px) { .tx-trade { grid-template-columns: minmax(0, 1fr); } .tx-swap { justify-self: center; transform: rotate(90deg); } }
+.tx-side { display: grid; gap: 6px; min-width: 0; }
+.tx-players { display: flex; flex-wrap: wrap; gap: 6px; }
+.tx-swap { font-size: 1.4rem; color: #6d4ad8; font-weight: 700; }
 
 </style>
 </head>
@@ -527,7 +571,17 @@ window.NAME_POOL = {
   const capSpace = (fid) => S.rules.cap - payroll(fid);
   const econ = () => ({ cap: S.rules.cap, max: S.rules.cap * S.rules.maxPct, min: S.rules.cap * S.rules.minPct });
   function log(text, fid, kind) { S.news.unshift({ season: S.season, day: S.day, phase: S.phase, text, team: fid || null, kind: kind || null }); if (S.news.length > 400) S.news.length = 400; }
-  function txn(text, fid) { S.transactions.unshift({ season: S.season, phase: S.phase, text, team: fid }); if (S.transactions.length > 600) S.transactions.length = 600; }
+  // Transactions are stored as structured entries (type, teams, players with a
+  // snapshot of rating/age) so the Transactions page can draw them as cards.
+  const pSnap = (p) => ({ id: p.id, n: p.name, o: p.r.ovr, a: age(p), pos: p.pos });
+  const tSnap = (fid) => { const t = T(fid); return t ? { abbr: t.abbr, name: `${t.city} ${t.name}`, color: t.color } : null; };
+  function txn(text, fid, d = {}) {
+    const inv = [...new Set([fid, ...(d.involved || [])].filter(Boolean))];
+    const tm = {}; for (const f of inv) tm[f] = tSnap(f);
+    const { involved, ...rest } = d;
+    S.transactions.unshift({ season: S.season, phase: S.phase, day: S.day, text, team: fid, involved: inv, tm, ...rest });
+    if (S.transactions.length > 1500) S.transactions.length = 1500;
+  }
 
   // ---------- valuation & contracts ----------
   function talent(p) {
@@ -1290,7 +1344,7 @@ window.NAME_POOL = {
       if (picks.length >= target) break;
       if (taken.has(p.team)) continue;
       taken.add(p.team); picks.push(p);
-      txn(`Expansion draft: ${teamName(fid)} select ${p.name} from the ${teamName(p.team)}.`, fid);
+      txn(`Expansion draft: ${teamName(fid)} select ${p.name} from the ${teamName(p.team)}.`, fid, { type: "expansion", from: p.team, involved: [p.team], p: pSnap(p), c: { ...p.c } });
       p.team = fid; p.acq = `Expansion draft ${S.season}`;
     }
     log(`Expansion draft: the ${teamName(fid)} take ${picks.length} players${picks[0] ? `, led by ${picks.sort((a, b) => b.r.ovr - a.r.ovr)[0].name}` : ""}.`, fid, "office");
@@ -1326,14 +1380,14 @@ window.NAME_POOL = {
         if (ros.length < S.rules.rosterMax || best.r.ovr > worst + 3) {
           if (ros.length >= S.rules.rosterMax) { const cut = ros.sort((a, b) => a.r.ovr - b.r.ovr)[0]; releaseToFA(cut, tf); }
           best.team = tf; best.acq = `Dispersal draft ${S.season}`; any = true;
-          txn(`Dispersal draft: ${teamName(tf)} take ${best.name}.`, tf);
+          txn(`Dispersal draft: ${teamName(tf)} take ${best.name}.`, tf, { type: "dispersal", from: fid, involved: [fid], p: pSnap(best), c: { ...best.c } });
         }
       }
     }
     pool.filter((p) => !p.team).forEach((p) => { p.c = { sal: 0, yrs: 0 }; p.ask = askingContract(p); });
     rankCache = null; save(); return { ok: true };
   }
-  function releaseToFA(p, fid) { p.team = null; p.c = { sal: 0, yrs: 0 }; p.ask = askingContract(p); txn(`${teamName(fid)} waive ${p.name}.`, fid); }
+  function releaseToFA(p, fid) { txn(`${teamName(fid)} waive ${p.name}.`, fid, { type: "waive", p: pSnap(p) }); p.team = null; p.c = { sal: 0, yrs: 0 }; p.ask = askingContract(p); }
 
   // ---------- offseason ----------
   function toOffseason() {
@@ -1366,6 +1420,7 @@ window.NAME_POOL = {
     runDraft();
     contractsAndFreeAgency();
     S.season++;
+    S.phase = "preseason"; // moves from here on belong to the new season's preseason
     if (S.rulesNext) { S.rules = S.rulesNext; S.rulesNext = null; }
     S.rules.cap = Math.round(S.rules.cap * (1 + S.rules.capGrowth) / 5000) * 5000;
     if (S.opts.followHistory && S.season === 2026 && S.rules.cap < 7e6) { S.rules.cap = 7e6; log("The 2026 CBA resets the salary cap to $7.0M.", null, "office"); }
@@ -1448,6 +1503,7 @@ window.NAME_POOL = {
       ch.prospect = null; ch.team = s.fid; ch.draft = { season: y, round: s.round, pick: i + 1, team: s.fid };
       ch.c = rookieContract(i + 1, s.round); ch.acq = `#${i + 1} pick, ${y} draft`;
       picks.push({ pick: i + 1, round: s.round, fid: s.fid, pid: ch.id });
+      txn(`${teamName(s.fid)} draft ${ch.name} with pick ${i + 1}.`, s.fid, { type: "draft", pick: i + 1, round: s.round, draftYear: y, p: { ...pSnap(ch), school: ch.school, real: !!ch.real }, c: { ...ch.c } });
       if (i < 3) log(`${y} draft, pick ${i + 1}: the ${teamName(s.fid)} select ${ch.name}${ch.real ? "" : " (generated)"}.`, s.fid, "draft");
     });
     S.lastDraft = { season: y, picks };
@@ -1469,8 +1525,8 @@ window.NAME_POOL = {
       p.c.yrs--;
       if (p.c.yrs > 0) continue;
       const fid = p.team, keep = (p.r.ovr >= 58 || (age(p) <= 25 && p.r.pot >= 65)) && age(p) <= 34 && rnd() < 0.72;
-      if (keep) { const a = askingContract(p); p.c = { sal: a.sal, yrs: a.yrs }; }
-      else { p.team = null; p.c = { sal: 0, yrs: 0 }; if (p.r.ovr >= 70) log(`${p.name} becomes a free agent, leaving the ${teamName(fid)}.`, fid, "fa"); }
+      if (keep) { const a = askingContract(p); p.c = { sal: a.sal, yrs: a.yrs }; txn(`${teamName(fid)} re-sign ${p.name}.`, fid, { type: "resign", p: pSnap(p), c: { sal: a.sal, yrs: a.yrs } }); }
+      else { txn(`${p.name} leaves the ${teamName(fid)} in free agency.`, fid, { type: "leave", p: pSnap(p) }); p.team = null; p.c = { sal: 0, yrs: 0 }; if (p.r.ovr >= 70) log(`${p.name} becomes a free agent, leaving the ${teamName(fid)}.`, fid, "fa"); }
     }
   }
   function develop() {
@@ -1518,6 +1574,7 @@ window.NAME_POOL = {
       if (!p.team && p.undrafted && rnd() < 0.5) pr = 1;
       if (rnd() < pr) {
         const fid = p.team;
+        if (fid || p.r.ovr >= 60 || p.awards.length) txn(`${p.name} retires.`, fid, { type: "retire", p: pSnap(p), seasons: (p.career || []).length + realSeasons(p.id).filter((x) => x < S.startYear).length, awards: p.awards.length });
         p.retired = S.season; p.team = null;
         if (p.r.ovr >= 70 || p.awards.length) log(`${p.name} retires${fid ? ` from the ${teamName(fid)}` : ""}.`, fid, "retire");
       }
@@ -1537,7 +1594,7 @@ window.NAME_POOL = {
         if (ask.sal <= capSpace(t.fid) || (need && ask.sal <= econ().min * 1.3)) {
           p.team = t.fid; p.c = { sal: Math.min(ask.sal, Math.max(econ().min, capSpace(t.fid))), yrs: ask.yrs }; p.ask = null; n++;
           p.acq = `Signed ${S.season}`;
-          txn(`${teamName(t.fid)} sign ${p.name} (${fmtMoney(p.c.sal)} × ${p.c.yrs}).`, t.fid);
+          txn(`${teamName(t.fid)} sign ${p.name} (${fmtMoney(p.c.sal)} × ${p.c.yrs}).`, t.fid, { type: "sign", p: pSnap(p), c: { sal: p.c.sal, yrs: p.c.yrs } });
           if (p.r.ovr >= 70) log(`${p.name} signs with the ${teamName(t.fid)}.`, t.fid, "fa");
           if (!need) break;
         }
@@ -1546,14 +1603,14 @@ window.NAME_POOL = {
   }
   function aiRosterFix(fid, initial) {
     let ps = roster(fid).sort((a, b) => a.r.ovr - b.r.ovr);
-    while (ps.length > S.rules.rosterMax) { const p = ps.shift(); p.team = null; p.c = { sal: 0, yrs: 0 }; p.ask = askingContract(p); if (!initial) txn(`${teamName(fid)} waive ${p.name}.`, fid); }
+    while (ps.length > S.rules.rosterMax) { const p = ps.shift(); if (!initial) txn(`${teamName(fid)} waive ${p.name}.`, fid, { type: "waive", p: pSnap(p) }); p.team = null; p.c = { sal: 0, yrs: 0 }; p.ask = askingContract(p); }
     let guard = 0;
     while (roster(fid).length < S.rules.rosterMin && guard++ < 20) {
       const fa = freeAgents().sort((a, b) => b.r.ovr - a.r.ovr)[0];
       if (!fa) { const g = genPlayer({ age: 24, ovrMean: 42, ovrSd: 4, potRoom: 2 }); S.players[g.id] = g; continue; }
       const sal = Math.max(econ().min, Math.min(fa.ask?.sal || econ().min, capSpace(fid)));
       fa.team = fid; fa.c = { sal: Math.round(sal / 1000) * 1000, yrs: 1 }; fa.ask = null;
-      if (!initial) txn(`${teamName(fid)} sign ${fa.name}.`, fid);
+      if (!initial) txn(`${teamName(fid)} sign ${fa.name}.`, fid, { type: "sign", p: pSnap(fa), c: { sal: fa.c.sal, yrs: fa.c.yrs } });
     }
   }
   // AI-to-AI trades: contenders buy current production from rebuilders who want youth.
@@ -1571,7 +1628,7 @@ window.NAME_POOL = {
         if (cGain > 2 && rGain > -1 && cAfter <= S.rules.cap * 1.0001 && rAfter <= S.rules.cap * 1.0001) {
           vet.team = c.fid; y.team = r.fid; vet.acq = `Traded from ${r.abbr} ${S.season}`; y.acq = `Traded from ${c.abbr} ${S.season}`;
           const text = `Trade: the ${teamName(c.fid)} acquire ${vet.name} from the ${teamName(r.fid)} for ${y.name}.`;
-          txn(text, c.fid); if (vet.r.ovr >= 70) log(text, c.fid, "trade");
+          txn(text, c.fid, { type: "trade", a: c.fid, b: r.fid, involved: [r.fid], aGets: [pSnap(vet)], bGets: [pSnap(y)] }); if (vet.r.ovr >= 70) log(text, c.fid, "trade");
           n--; break;
         }
       }
@@ -2052,7 +2109,7 @@ window.NAME_POOL = {
       + `<div class="sub">The dashed line marks the playoff cut (${cutConf ? `top ${per} per conference` : `top ${per} overall`}). Teams tied on record are separated by head-to-head record among the tied teams, then record against teams at .500 or better, then point differential, then a coin flip; "TB" shows which one decided it.${br ? ` In real life, ${S.season}'s best record belonged to ${esc(br.city)} ${esc(br.name)} at ${br.w}-${br.l}.` : ""}</div>`;
   }
   // ---------- visual bracket ----------
-  const BK = { CW: 200, CH: 62, VG: 18, HG: 44, TOP: 34 };
+  const BK = { CW: 190, CH: 62, VG: 18, HG: 36, TOP: 34 };
   // Every round of a bracket, with not-yet-played rounds filled in as pending slots.
   function fullRounds(br) {
     const out = [];
@@ -2190,8 +2247,9 @@ window.NAME_POOL = {
         ${years.length > 1 ? `<select id="poSeason" aria-label="Season">${years.map((y) => `<option ${y === ui.poSeason ? "selected" : ""}>${y}</option>`).join("")}</select>` : ""}</div>
       ${sb ? bracketChart(sb.po, sb.teams) : `<div class="empty">No bracket for this season.</div>`}
       ${live && S.phase === "playoffs" && !S.playoffs.champion ? `<div class="row"><button class="btn" data-act="po" data-mode="game">Sim one game</button><button class="btn" data-act="po" data-mode="round">Sim round</button><button class="btn primary" data-act="po" data-mode="all">Sim to champion</button></div>` : ""}
-      ${sb && !sb.po.projected ? `<div class="row"><button class="btn small" data-act="poGames">Game-by-game results</button></div>` : ""}
-    </section>`;
+    </section>
+    ${(() => { if (!sb || sb.po.projected) return ""; const sg = GM.seasonGames(ui.poSeason); const ser = sg ? sg.playoffs : [];
+      return ser.length ? `<section class="panel"><div class="panel-head"><h2>Series results</h2><span class="sub">Every game, with box scores${Object.keys(sg.boxes).length ? "" : " (kept for the current and previous season)"}</span></div><div class="series-grid">${ser.slice().reverse().map((s) => seriesCard(sg, s)).join("")}</div></section>` : ""; })()}`;
   }
 
   // ---------- teams ----------
@@ -2291,11 +2349,66 @@ window.NAME_POOL = {
         ${upcoming.length ? `<div class="sub">These players were in the real ${y} draft. In your league they're drafted in the order your standings and lottery produce.</div><div class="tablewrap"><table><tbody>${upcoming.slice(0, 40).map((p) => `<tr><td class="muted">${p.dn ? `real #${p.dn}` : ""}</td><td>${esc(p.n)}</td><td class="muted">${esc(p.col && p.col !== "None" ? p.col : p.ctry)}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">${y > D.last ? "From here on, draft classes are generated." : "No real draftees found for this year."}</div>`}
       </section></div>`;
   }
+  // ---------- transactions ----------
+  const TX_TYPES = [["all", "All moves"], ["trade", "Trades"], ["sign", "Signings"], ["resign", "Re-signings"], ["draft", "Draft"], ["waive", "Waivers"], ["leave", "Departures"], ["expansion", "Expansion & dispersal"], ["retire", "Retirements"]];
+  const TX_LABEL = { trade: "Trade", sign: "Signed", resign: "Re-signed", draft: "Drafted", waive: "Waived", leave: "Left in FA", expansion: "Expansion draft", dispersal: "Dispersal draft", retire: "Retired" };
+  function txTeam(x, fid) {
+    const snap = (x.tm && x.tm[fid]) || {};
+    if (GM.T(fid) && logos[fid]) return badge(fid);
+    return snap.abbr ? badgeRaw(snap.abbr, snap.color || "#666") : badge(fid);
+  }
+  const txTeamName = (x, fid) => esc((x.tm && x.tm[fid] && x.tm[fid].name) || GM.teamName(fid));
+  function txPlayer(pp) {
+    if (!pp) return "";
+    const live = GM.P(pp.id);
+    const name = live ? `<button class="plink" data-act="player" data-id="${pp.id}">${esc(pp.n)}</button>` : `<b>${esc(pp.n)}</b>`;
+    return `<span class="tx-player">${ovr(pp.o)}<span class="tx-pn">${name}<span class="sub">${esc(pp.pos || "")} · age ${pp.a}</span></span></span>`;
+  }
+  const txContract = (c) => (c && c.sal ? `<span class="tx-contract">${money(c.sal)}<span> × ${c.yrs} yr${c.yrs === 1 ? "" : "s"}</span></span>` : "");
+  function txCard(x) {
+    const type = x.type === "dispersal" ? "expansion" : x.type;
+    if (!x.type) return `<div class="tx-card"><span class="tx-type">Move</span><div class="tx-body"><span>${esc(x.text)}</span></div></div>`;
+    let body = "";
+    if (x.type === "trade") {
+      const side = (fid, gets) => `<div class="tx-side"><div class="tx-team">${txTeam(x, fid)}<b>${txTeamName(x, fid)}</b><span class="sub">receive</span></div><div class="tx-players">${gets.map(txPlayer).join("")}</div></div>`;
+      body = `<div class="tx-trade">${side(x.a, x.aGets || [])}<div class="tx-swap" aria-hidden="true">⇄</div>${side(x.b, x.bGets || [])}</div>`;
+    } else if (x.type === "draft") {
+      body = `<div class="tx-line"><div class="tx-team">${txTeam(x, x.team)}<b>${txTeamName(x, x.team)}</b></div><span class="tx-pick">${x.draftYear || ""} · Rd ${x.round} · #${x.pick}</span><span class="tx-arrow">→</span>${txPlayer(x.p)}<span class="sub">${esc(x.p?.school || "")}${x.p && !x.p.real ? " · generated" : ""}</span><span class="spacer"></span>${txContract(x.c)}</div>`;
+    } else if (x.type === "sign" || x.type === "resign") {
+      body = `<div class="tx-line"><div class="tx-team">${txTeam(x, x.team)}<b>${txTeamName(x, x.team)}</b></div><span class="tx-arrow">←</span>${txPlayer(x.p)}<span class="spacer"></span>${txContract(x.c)}</div>`;
+    } else if (x.type === "waive" || x.type === "leave") {
+      body = `<div class="tx-line"><div class="tx-team">${txTeam(x, x.team)}<b>${txTeamName(x, x.team)}</b></div><span class="tx-arrow out">→</span>${txPlayer(x.p)}<span class="tx-arrow out">→</span><span class="chip">Free agency</span></div>`;
+    } else if (x.type === "expansion" || x.type === "dispersal") {
+      body = `<div class="tx-line"><div class="tx-team">${txTeam(x, x.from)}<span class="sub">${txTeamName(x, x.from)}</span></div><span class="tx-arrow">→</span>${txPlayer(x.p)}<span class="tx-arrow">→</span><div class="tx-team">${txTeam(x, x.team)}<b>${txTeamName(x, x.team)}</b></div><span class="spacer"></span>${txContract(x.c)}</div>`;
+    } else if (x.type === "retire") {
+      body = `<div class="tx-line">${txPlayer(x.p)}${x.team ? `<span class="sub">from</span><div class="tx-team">${txTeam(x, x.team)}<span class="sub">${txTeamName(x, x.team)}</span></div>` : `<span class="sub">as a free agent</span>`}<span class="spacer"></span><span class="sub">${x.seasons ? `${x.seasons} season${x.seasons === 1 ? "" : "s"}` : ""}${x.awards ? ` · ${x.awards} honor${x.awards === 1 ? "" : "s"}` : ""}</span></div>`;
+    } else body = `<span>${esc(x.text)}</span>`;
+    return `<div class="tx-card t-${type}"><span class="tx-type t-${type}">${TX_LABEL[x.type] || "Move"}</span><div class="tx-body">${body}</div></div>`;
+  }
   function renderMoves() {
     const S = GM.S;
-    const list = S.transactions.filter((x) => ui.txTeam === "all" || x.team === ui.txTeam).slice(0, 200);
-    $("#view").innerHTML = `<section class="panel"><div class="panel-head"><h2>Transactions</h2><select id="txTeam" aria-label="Team filter"><option value="all">All teams</option>${S.teams.map((t) => `<option value="${t.fid}" ${ui.txTeam === t.fid ? "selected" : ""}>${esc(t.city)} ${esc(t.name)}</option>`).join("")}</select></div>
-      <div class="news" style="max-height:none">${list.map((x) => `<div><span class="when">${x.season} ${(phaseLabel[x.phase] || "").slice(0, 3).toUpperCase()}</span>${esc(x.text)}</div>`).join("") || `<div class="empty">No transactions yet.</div>`}</div></section>`;
+    const f = ui.tx || (ui.tx = { type: "all", team: "all", season: "all", limit: 120 });
+    const typeOk = (x) => f.type === "all" || x.type === f.type || (f.type === "expansion" && x.type === "dispersal");
+    const teamOk = (x) => f.team === "all" || x.team === f.team || (x.involved || []).includes(f.team);
+    const seasons = [...new Set(S.transactions.map((x) => x.season))].sort((a, b) => b - a);
+    const all = S.transactions.filter((x) => typeOk(x) && teamOk(x) && (f.season === "all" || x.season === +f.season));
+    const list = all.slice(0, f.limit);
+    const counts = {}; for (const x of S.transactions.filter((x) => teamOk(x) && (f.season === "all" || x.season === +f.season))) { const k = x.type === "dispersal" ? "expansion" : x.type || "other"; counts[k] = (counts[k] || 0) + 1; }
+    const phaseOrder = (p) => ({ playoffs: "Playoffs", regular: "Regular season", preseason: "Preseason", offseason: "Offseason" }[p] || "");
+    let html = "", lastKey = "";
+    for (const x of list) {
+      const key = `${x.season}-${x.phase}`;
+      if (key !== lastKey) { html += `<div class="tx-group"><b>${x.season}</b> ${phaseOrder(x.phase)}</div>`; lastKey = key; }
+      html += txCard(x);
+    }
+    $("#view").innerHTML = `<section class="panel">
+      <div class="panel-head"><div><h2>Transactions</h2><div class="sub">${all.length} move${all.length === 1 ? "" : "s"}${f.team !== "all" ? ` involving the ${esc(GM.teamName(f.team))}` : ""}</div></div>
+        <div class="row"><select id="txSeason" aria-label="Season"><option value="all">All seasons</option>${seasons.map((y) => `<option ${String(y) === String(f.season) ? "selected" : ""}>${y}</option>`).join("")}</select>
+        <select id="txTeam" aria-label="Team filter"><option value="all">All teams</option>${S.teams.map((t) => `<option value="${t.fid}" ${f.team === t.fid ? "selected" : ""}>${esc(t.city)} ${esc(t.name)}</option>`).join("")}</select></div></div>
+      <div class="tx-filters">${TX_TYPES.map(([k, l]) => `<button class="tx-filter t-${k} ${f.type === k ? "on" : ""}" data-act="txType" data-v="${k}">${l}${k !== "all" && counts[k] ? ` <span>${counts[k]}</span>` : ""}</button>`).join("")}</div>
+      <div class="tx-list">${html || `<div class="empty">No moves match these filters.</div>`}</div>
+      ${all.length > list.length ? `<div class="row"><button class="btn" data-act="txMore">Show more (${all.length - list.length} left)</button></div>` : ""}
+    </section>`;
   }
   function renderHistory() {
     const S = GM.S;
@@ -2557,16 +2670,16 @@ window.NAME_POOL = {
     let body = "";
     if (view === "game") {
       body = `<div class="sub">Single-game records from games played in your league since ${S.startYear}. (Real box scores before ${S.startYear} aren't in the data.)</div>
-        <div class="rec-grid">${["pts", "reb", "ast", "stl", "blk", "tpm"].map((k) => card(STAT[k], rb.game[k] || [], (e) => `<td>${pname(e)} <span class="muted">${esc(e.abbr)} vs ${esc(e.opp)}</span></td><td class="muted">${e.season}${e.po ? " PO" : ""}</td><td class="num rv">${e.v}</td>`)).join("")}
+        <div class="rec-grid">${["pts", "reb", "ast", "stl", "blk", "tpm"].map((k) => card(STAT[k], rb.game[k] || [], (e) => `<td class="rec-who">${pname(e)}<span class="sub">${esc(e.abbr)} vs ${esc(e.opp)}</span></td><td class="muted rec-when">${e.season}${e.po ? `<span class="sub">Playoffs</span>` : ""}</td><td class="num rv">${e.v}</td>`)).join("")}
         ${card("Team points (most)", rb.teamGame.high, (e) => `<td>${esc(e.abbr)} <span class="muted">vs ${esc(e.opp)}</span></td><td class="muted">${e.season}${e.po ? " PO" : ""}</td><td class="num rv">${e.v}</td>`)}
         ${card("Team points (fewest)", rb.teamGame.low, (e) => `<td>${esc(e.abbr)} <span class="muted">vs ${esc(e.opp)}</span></td><td class="muted">${e.season}${e.po ? " PO" : ""}</td><td class="num rv">${e.v}</td>`)}
         ${card("Largest margin", rb.teamGame.margin, (e) => `<td>${esc(e.abbr)} <span class="muted">${esc(e.score)} vs ${esc(e.opp)}</span></td><td class="muted">${e.season}${e.po ? " PO" : ""}</td><td class="num rv">+${e.v}</td>`)}</div>`;
     } else if (view === "season") {
       body = `<div class="sub">Per-game averages in a season (at least half the season's games). Includes real seasons before ${S.startYear}.</div>
-        <div class="rec-grid">${["pts", "reb", "ast", "stl", "blk"].map((k) => card(`${STAT[k]} per game`, rb.season[k], (e) => `<td>${pname(e)} <span class="muted">${esc(e.team)}</span></td><td class="muted">${e.season}${e.real ? " ·real" : ""}</td><td class="num rv">${(+e[k]).toFixed(1)}</td>`)).join("")}</div>`;
+        <div class="rec-grid">${["pts", "reb", "ast", "stl", "blk"].map((k) => card(`${STAT[k]} per game`, rb.season[k], (e) => `<td class="rec-who">${pname(e)}<span class="sub">${esc(e.team)}</span></td><td class="muted rec-when">${e.season}${e.real ? `<span class="sub">real</span>` : ""}</td><td class="num rv">${(+e[k]).toFixed(1)}</td>`)).join("")}</div>`;
     } else if (view === "career") {
       body = `<div class="sub">Career totals across real seasons before ${S.startYear} and every season played in your league. Pre-${S.startYear} totals are rebuilt from per-game averages, so they can be off by a few.</div>
-        <div class="rec-grid">${["pts", "reb", "ast", "stl", "blk", "gp"].map((k) => card(STAT[k], rb.career[k], (e) => `<td>${pname(e)} <span class="muted">${e.first}–${e.last}</span></td><td class="num rv">${e[k].toLocaleString()}</td>`)).join("")}</div>`;
+        <div class="rec-grid">${["pts", "reb", "ast", "stl", "blk", "gp"].map((k) => card(STAT[k], rb.career[k], (e) => `<td class="rec-who">${pname(e)}<span class="sub">${e.first}–${e.last}</span></td><td class="num rv">${e[k].toLocaleString()}</td>`)).join("")}</div>`;
     } else {
       const tl = (e) => `<td>${esc(e.name)}</td><td class="muted">${e.season}${e.real ? " ·real" : ""}</td><td class="num rv">${e.w}-${e.l}</td>`;
       body = `<div class="rec-grid">${card("Best records", rb.bestTeams, tl)}${card("Worst records", rb.worstTeams, tl)}
@@ -2618,6 +2731,8 @@ window.NAME_POOL = {
       case "box": ui.modal = { type: "box", season: +el.dataset.season, id: el.dataset.gid }; break;
       case "schedView": ui.sched.view = el.dataset.v; break;
       case "awardsView": ui.awardsView = el.dataset.v; break;
+      case "txType": ui.tx.type = el.dataset.v; ui.tx.limit = 120; break;
+      case "txMore": ui.tx.limit += 150; break;
       case "recView": ui.recView = el.dataset.v; break;
       case "poGames": ui.sched = { season: ui.poSeason, team: "all", view: "playoffs" }; ui.tab = "schedule"; window.scrollTo(0, 0); break;
       case "teamSched": ui.sched = { season: GM.S.season, team: id, view: "regular" }; ui.tab = "schedule"; ui.modal = null; window.scrollTo(0, 0); break;
@@ -2672,7 +2787,8 @@ window.NAME_POOL = {
     else if (el.id === "optCareers") { GM.S.opts.realCareers = el.checked; GM.save(); }
     else if (el.id === "newsKind") { ui.newsKind = el.value; render(); }
     else if (el.id === "pteam") { ui.players.team = el.value; render(); }
-    else if (el.id === "txTeam") { ui.txTeam = el.value; render(); }
+    else if (el.id === "txTeam") { ui.tx.team = el.value; ui.tx.limit = 120; render(); }
+    else if (el.id === "txSeason") { ui.tx.season = el.value; ui.tx.limit = 120; render(); }
     else if (el.id === "poSeason") { ui.poSeason = +el.value; render(); }
     else if (el.id === "schedSeason") { ui.sched.season = +el.value; render(); }
     else if (el.id === "schedTeam") { ui.sched.team = el.value; render(); }

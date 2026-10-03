@@ -145,7 +145,17 @@
   const capSpace = (fid) => S.rules.cap - payroll(fid);
   const econ = () => ({ cap: S.rules.cap, max: S.rules.cap * S.rules.maxPct, min: S.rules.cap * S.rules.minPct });
   function log(text, fid, kind) { S.news.unshift({ season: S.season, day: S.day, phase: S.phase, text, team: fid || null, kind: kind || null }); if (S.news.length > 400) S.news.length = 400; }
-  function txn(text, fid) { S.transactions.unshift({ season: S.season, phase: S.phase, text, team: fid }); if (S.transactions.length > 600) S.transactions.length = 600; }
+  // Transactions are stored as structured entries (type, teams, players with a
+  // snapshot of rating/age) so the Transactions page can draw them as cards.
+  const pSnap = (p) => ({ id: p.id, n: p.name, o: p.r.ovr, a: age(p), pos: p.pos });
+  const tSnap = (fid) => { const t = T(fid); return t ? { abbr: t.abbr, name: `${t.city} ${t.name}`, color: t.color } : null; };
+  function txn(text, fid, d = {}) {
+    const inv = [...new Set([fid, ...(d.involved || [])].filter(Boolean))];
+    const tm = {}; for (const f of inv) tm[f] = tSnap(f);
+    const { involved, ...rest } = d;
+    S.transactions.unshift({ season: S.season, phase: S.phase, day: S.day, text, team: fid, involved: inv, tm, ...rest });
+    if (S.transactions.length > 1500) S.transactions.length = 1500;
+  }
 
   // ---------- valuation & contracts ----------
   function talent(p) {
@@ -908,7 +918,7 @@
       if (picks.length >= target) break;
       if (taken.has(p.team)) continue;
       taken.add(p.team); picks.push(p);
-      txn(`Expansion draft: ${teamName(fid)} select ${p.name} from the ${teamName(p.team)}.`, fid);
+      txn(`Expansion draft: ${teamName(fid)} select ${p.name} from the ${teamName(p.team)}.`, fid, { type: "expansion", from: p.team, involved: [p.team], p: pSnap(p), c: { ...p.c } });
       p.team = fid; p.acq = `Expansion draft ${S.season}`;
     }
     log(`Expansion draft: the ${teamName(fid)} take ${picks.length} players${picks[0] ? `, led by ${picks.sort((a, b) => b.r.ovr - a.r.ovr)[0].name}` : ""}.`, fid, "office");
@@ -944,14 +954,14 @@
         if (ros.length < S.rules.rosterMax || best.r.ovr > worst + 3) {
           if (ros.length >= S.rules.rosterMax) { const cut = ros.sort((a, b) => a.r.ovr - b.r.ovr)[0]; releaseToFA(cut, tf); }
           best.team = tf; best.acq = `Dispersal draft ${S.season}`; any = true;
-          txn(`Dispersal draft: ${teamName(tf)} take ${best.name}.`, tf);
+          txn(`Dispersal draft: ${teamName(tf)} take ${best.name}.`, tf, { type: "dispersal", from: fid, involved: [fid], p: pSnap(best), c: { ...best.c } });
         }
       }
     }
     pool.filter((p) => !p.team).forEach((p) => { p.c = { sal: 0, yrs: 0 }; p.ask = askingContract(p); });
     rankCache = null; save(); return { ok: true };
   }
-  function releaseToFA(p, fid) { p.team = null; p.c = { sal: 0, yrs: 0 }; p.ask = askingContract(p); txn(`${teamName(fid)} waive ${p.name}.`, fid); }
+  function releaseToFA(p, fid) { txn(`${teamName(fid)} waive ${p.name}.`, fid, { type: "waive", p: pSnap(p) }); p.team = null; p.c = { sal: 0, yrs: 0 }; p.ask = askingContract(p); }
 
   // ---------- offseason ----------
   function toOffseason() {
@@ -984,6 +994,7 @@
     runDraft();
     contractsAndFreeAgency();
     S.season++;
+    S.phase = "preseason"; // moves from here on belong to the new season's preseason
     if (S.rulesNext) { S.rules = S.rulesNext; S.rulesNext = null; }
     S.rules.cap = Math.round(S.rules.cap * (1 + S.rules.capGrowth) / 5000) * 5000;
     if (S.opts.followHistory && S.season === 2026 && S.rules.cap < 7e6) { S.rules.cap = 7e6; log("The 2026 CBA resets the salary cap to $7.0M.", null, "office"); }
@@ -1066,6 +1077,7 @@
       ch.prospect = null; ch.team = s.fid; ch.draft = { season: y, round: s.round, pick: i + 1, team: s.fid };
       ch.c = rookieContract(i + 1, s.round); ch.acq = `#${i + 1} pick, ${y} draft`;
       picks.push({ pick: i + 1, round: s.round, fid: s.fid, pid: ch.id });
+      txn(`${teamName(s.fid)} draft ${ch.name} with pick ${i + 1}.`, s.fid, { type: "draft", pick: i + 1, round: s.round, draftYear: y, p: { ...pSnap(ch), school: ch.school, real: !!ch.real }, c: { ...ch.c } });
       if (i < 3) log(`${y} draft, pick ${i + 1}: the ${teamName(s.fid)} select ${ch.name}${ch.real ? "" : " (generated)"}.`, s.fid, "draft");
     });
     S.lastDraft = { season: y, picks };
@@ -1087,8 +1099,8 @@
       p.c.yrs--;
       if (p.c.yrs > 0) continue;
       const fid = p.team, keep = (p.r.ovr >= 58 || (age(p) <= 25 && p.r.pot >= 65)) && age(p) <= 34 && rnd() < 0.72;
-      if (keep) { const a = askingContract(p); p.c = { sal: a.sal, yrs: a.yrs }; }
-      else { p.team = null; p.c = { sal: 0, yrs: 0 }; if (p.r.ovr >= 70) log(`${p.name} becomes a free agent, leaving the ${teamName(fid)}.`, fid, "fa"); }
+      if (keep) { const a = askingContract(p); p.c = { sal: a.sal, yrs: a.yrs }; txn(`${teamName(fid)} re-sign ${p.name}.`, fid, { type: "resign", p: pSnap(p), c: { sal: a.sal, yrs: a.yrs } }); }
+      else { txn(`${p.name} leaves the ${teamName(fid)} in free agency.`, fid, { type: "leave", p: pSnap(p) }); p.team = null; p.c = { sal: 0, yrs: 0 }; if (p.r.ovr >= 70) log(`${p.name} becomes a free agent, leaving the ${teamName(fid)}.`, fid, "fa"); }
     }
   }
   function develop() {
@@ -1136,6 +1148,7 @@
       if (!p.team && p.undrafted && rnd() < 0.5) pr = 1;
       if (rnd() < pr) {
         const fid = p.team;
+        if (fid || p.r.ovr >= 60 || p.awards.length) txn(`${p.name} retires.`, fid, { type: "retire", p: pSnap(p), seasons: (p.career || []).length + realSeasons(p.id).filter((x) => x < S.startYear).length, awards: p.awards.length });
         p.retired = S.season; p.team = null;
         if (p.r.ovr >= 70 || p.awards.length) log(`${p.name} retires${fid ? ` from the ${teamName(fid)}` : ""}.`, fid, "retire");
       }
@@ -1155,7 +1168,7 @@
         if (ask.sal <= capSpace(t.fid) || (need && ask.sal <= econ().min * 1.3)) {
           p.team = t.fid; p.c = { sal: Math.min(ask.sal, Math.max(econ().min, capSpace(t.fid))), yrs: ask.yrs }; p.ask = null; n++;
           p.acq = `Signed ${S.season}`;
-          txn(`${teamName(t.fid)} sign ${p.name} (${fmtMoney(p.c.sal)} × ${p.c.yrs}).`, t.fid);
+          txn(`${teamName(t.fid)} sign ${p.name} (${fmtMoney(p.c.sal)} × ${p.c.yrs}).`, t.fid, { type: "sign", p: pSnap(p), c: { sal: p.c.sal, yrs: p.c.yrs } });
           if (p.r.ovr >= 70) log(`${p.name} signs with the ${teamName(t.fid)}.`, t.fid, "fa");
           if (!need) break;
         }
@@ -1164,14 +1177,14 @@
   }
   function aiRosterFix(fid, initial) {
     let ps = roster(fid).sort((a, b) => a.r.ovr - b.r.ovr);
-    while (ps.length > S.rules.rosterMax) { const p = ps.shift(); p.team = null; p.c = { sal: 0, yrs: 0 }; p.ask = askingContract(p); if (!initial) txn(`${teamName(fid)} waive ${p.name}.`, fid); }
+    while (ps.length > S.rules.rosterMax) { const p = ps.shift(); if (!initial) txn(`${teamName(fid)} waive ${p.name}.`, fid, { type: "waive", p: pSnap(p) }); p.team = null; p.c = { sal: 0, yrs: 0 }; p.ask = askingContract(p); }
     let guard = 0;
     while (roster(fid).length < S.rules.rosterMin && guard++ < 20) {
       const fa = freeAgents().sort((a, b) => b.r.ovr - a.r.ovr)[0];
       if (!fa) { const g = genPlayer({ age: 24, ovrMean: 42, ovrSd: 4, potRoom: 2 }); S.players[g.id] = g; continue; }
       const sal = Math.max(econ().min, Math.min(fa.ask?.sal || econ().min, capSpace(fid)));
       fa.team = fid; fa.c = { sal: Math.round(sal / 1000) * 1000, yrs: 1 }; fa.ask = null;
-      if (!initial) txn(`${teamName(fid)} sign ${fa.name}.`, fid);
+      if (!initial) txn(`${teamName(fid)} sign ${fa.name}.`, fid, { type: "sign", p: pSnap(fa), c: { sal: fa.c.sal, yrs: fa.c.yrs } });
     }
   }
   // AI-to-AI trades: contenders buy current production from rebuilders who want youth.
@@ -1189,7 +1202,7 @@
         if (cGain > 2 && rGain > -1 && cAfter <= S.rules.cap * 1.0001 && rAfter <= S.rules.cap * 1.0001) {
           vet.team = c.fid; y.team = r.fid; vet.acq = `Traded from ${r.abbr} ${S.season}`; y.acq = `Traded from ${c.abbr} ${S.season}`;
           const text = `Trade: the ${teamName(c.fid)} acquire ${vet.name} from the ${teamName(r.fid)} for ${y.name}.`;
-          txn(text, c.fid); if (vet.r.ovr >= 70) log(text, c.fid, "trade");
+          txn(text, c.fid, { type: "trade", a: c.fid, b: r.fid, involved: [r.fid], aGets: [pSnap(vet)], bGets: [pSnap(y)] }); if (vet.r.ovr >= 70) log(text, c.fid, "trade");
           n--; break;
         }
       }
